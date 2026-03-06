@@ -1,0 +1,12 @@
+{
+  "name": "sabs-subtitles",
+  "version": "1.0.0",
+  "description": "Stremio subtitle addon for subs.sab.bz",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js"
+  },
+  "engines": {
+    "node": ">=14.0.0"
+  }
+}
