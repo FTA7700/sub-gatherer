@@ -2,5 +2,5 @@ services:
   - type: web
     name: sub-gatherer
     env: node
-    buildCommand: apt-get install -y unrar-free || apt-get install -y unrar || true
+    buildCommand: yarn install
     startCommand: node index.js
