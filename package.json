@@ -6,6 +6,9 @@
   "scripts": {
     "start": "node index.js"
   },
+  "dependencies": {
+    "node-unrar-js": "^2.0.0"
+  },
   "engines": {
     "node": ">=14.0.0"
   }
