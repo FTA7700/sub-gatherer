@@ -299,7 +299,11 @@ async function buildSrtProxy(attachId, season, episode) {
 
   const downloadUrl = `${BASE_URL}/index.php?act=download&attach_id=${attachId}`;
   console.log(`[proxy] downloading ${downloadUrl}`);
-  const { buffer, headers } = await fetchBuffer(downloadUrl);
+  const { buffer, headers } = await fetchBuffer(downloadUrl, {
+    'Referer': BASE_URL,
+    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+    'Accept-Language': 'bg,en;q=0.5',
+  });
 
   const ct = (headers['content-type'] || '').toLowerCase();
   const cd = (headers['content-disposition'] || '').toLowerCase();
@@ -355,7 +359,7 @@ const server = http.createServer(async (req, res) => {
   if (subMatch) {
     const [, type, id] = subMatch;
     const parts = id.split(':');
-    const imdbId = parts[0].split('/')[0];
+    const imdbId = parts[0];
     const season = parts[1] ? parseInt(parts[1]) : null;
     const episode = parts[2] ? parseInt(parts[2]) : null;
 
