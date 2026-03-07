@@ -101,12 +101,7 @@ async function searchSubtitles(imdbId, title, season, episode) {
     const titleMatch = row.match(/act=download[^"]*"[^>]*>([^<]+)/);
     const subTitle = titleMatch ? titleMatch[1].trim() : query;
 
-    const lang = row.match(/Български|Bulgarian/i)
-      ? 'bul'
-      : row.match(/English/i)
-      ? 'eng'
-      : 'und';
-    console.log(`[lang] attachId=${attachId} lang=${lang} rowSnippet=${row.slice(0, 200).replace(/\s+/g, ' ')}`);
+    const lang = row.match(/English/i) ? 'eng' : 'bul';
 
     const fpsMatch = row.match(/(\d{2}\.\d{3})/);
     const fps = fpsMatch ? fpsMatch[1] : '';
