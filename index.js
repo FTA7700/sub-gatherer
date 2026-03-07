@@ -15,11 +15,22 @@ const BASE_URL = 'http://subs.sab.bz';
 
 // ─── Manifest ────────────────────────────────────────────────────────────────
 
-const MANIFEST = {
+const MANIFEST_SABS = {
   id: 'community.sabsubs',
-  version: '1.1.0',
-  name: 'BG Subtitles',
-  description: 'Bulgarian & English subtitles from subs.sab.bz and subsunacs.net',
+  version: '1.2.0',
+  name: 'SAB Subtitles',
+  description: 'Bulgarian & English subtitles from subs.sab.bz',
+  types: ['movie', 'series'],
+  catalogs: [],
+  resources: ['subtitles'],
+  idPrefixes: ['tt'],
+};
+
+const MANIFEST_UNACS = {
+  id: 'community.unacsubs',
+  version: '1.2.0',
+  name: 'UNACS Subtitles',
+  description: 'Bulgarian & English subtitles from subsunacs.net',
   types: ['movie', 'series'],
   catalogs: [],
   resources: ['subtitles'],
@@ -575,6 +586,17 @@ async function buildSrtProxy(attachId, season, episode) {
   }
 }
 
+// ─── Helpers ─────────────────────────────────────────────────────────────────
+
+function parseRequest(id) {
+  const decodedId = decodeURIComponent(id);
+  const parts = decodedId.split(':');
+  const imdbId = parts[0].split('/')[0];
+  const season = parts[1] ? parseInt(parts[1]) : null;
+  const episode = parts[2] ? parseInt(parts[2]) : null;
+  return { imdbId, season, episode };
+}
+
 // ─── Router ───────────────────────────────────────────────────────────────────
 
 const server = http.createServer(async (req, res) => {
@@ -584,17 +606,27 @@ const server = http.createServer(async (req, res) => {
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Headers', '*');
 
+  // Manifests
+  if (path === '/sabs/manifest.json') {
+    res.setHeader('Content-Type', 'application/json');
+    return res.end(JSON.stringify(MANIFEST_SABS));
+  }
+  if (path === '/unacs/manifest.json') {
+    res.setHeader('Content-Type', 'application/json');
+    return res.end(JSON.stringify(MANIFEST_UNACS));
+  }
+  // Legacy route
   if (path === '/manifest.json') {
     res.setHeader('Content-Type', 'application/json');
-    return res.end(JSON.stringify(MANIFEST));
+    return res.end(JSON.stringify(MANIFEST_SABS));
   }
 
+  // Proxy
   const proxyMatch = path.match(/^\/proxy\/(.+)\.srt$/);
   if (proxyMatch) {
     const key = decodeURIComponent(proxyMatch[1]);
     let data = srtCache.get(key);
     if (!data && key.startsWith('unacs__')) {
-      // Re-download if cache was lost (e.g. cold start)
       const parts = key.split('__');
       const subSlug = parts[1];
       const season = parts[2] !== 'n' ? parseInt(parts[2]) : null;
@@ -615,56 +647,59 @@ const server = http.createServer(async (req, res) => {
     return res.end(data);
   }
 
-  const subMatch = path.match(/^\/subtitles\/(\w+)\/(.+)\.json$/);
-  if (subMatch) {
-    const [, type, id] = subMatch;
-    const decodedId = decodeURIComponent(id);
-    const parts = decodedId.split(':');
-    const imdbId = parts[0].split('/')[0];
-    const season = parts[1] ? parseInt(parts[1]) : null;
-    const episode = parts[2] ? parseInt(parts[2]) : null;
-
-    console.log(`[request] ${type} ${imdbId} S${season}E${episode}`);
+  // SAB subtitles
+  const sabsMatch = path.match(/^\/sabs\/subtitles\/(\w+)\/(.+)\.json$/);
+  if (sabsMatch) {
+    const [, type, id] = sabsMatch;
+    const { imdbId, season, episode } = parseRequest(id);
+    console.log(`[sabs request] ${type} ${imdbId} S${season}E${episode}`);
 
     const titleInfo = await getTitleFromImdb(imdbId);
-    if (!titleInfo) {
-      console.log(`[request] no title found, returning empty`);
-      res.setHeader('Content-Type', 'application/json');
-      return res.end(JSON.stringify({ subtitles: [] }));
-    }
-
+    if (!titleInfo) return res.end(JSON.stringify({ subtitles: [] }));
     const { title, year } = titleInfo;
     console.log(`[title] "${title}" (${year})`);
 
-    // Run both sources in parallel
-    const [sabsResults, unacsResults] = await Promise.all([
-      searchSubtitles(imdbId, title, season, episode).catch(e => { console.error('[sabs] search failed:', e.message); return []; }),
-      searchUnacs(title, year, season, episode).catch(e => { console.error('[unacs] search failed:', e.message); return []; }),
-    ]);
-
-    console.log(`[found] sabs: ${sabsResults.length}, unacs: ${unacsResults.length}`);
+    const sabsResults = await searchSubtitles(imdbId, title, season, episode).catch(e => { console.error('[sabs] search failed:', e.message); return []; });
+    console.log(`[sabs found] ${sabsResults.length}`);
 
     const host = req.headers.host || `localhost:${PORT}`;
     const subtitles = [];
-
-    // Process sabs results
     for (const s of sabsResults.slice(0, 8)) {
       try {
         const key = await buildSrtProxy(s.attachId, season, episode);
         if (!key) continue;
-        const proxyUrl = `https://${host}/proxy/${encodeURIComponent(key)}.srt`;
         subtitles.push({
           id: `sabsub-${s.attachId}`,
-          url: proxyUrl,
+          url: `https://${host}/proxy/${encodeURIComponent(key)}.srt`,
           lang: s.lang,
-          name: `[sabs] ${s.title}${s.fps ? ` • ${s.fps}fps` : ''}`,
+          name: `${s.title}${s.fps ? ` • ${s.fps}fps` : ''}`,
         });
       } catch (e) {
         console.error(`[sabs proxy] error for ${s.attachId}:`, e.message);
       }
     }
+    console.log(`[sabs response] ${subtitles.length} subtitles`);
+    res.setHeader('Content-Type', 'application/json');
+    return res.end(JSON.stringify({ subtitles }));
+  }
 
-    // Process subsunacs results
+  // UNACS subtitles
+  const unacsMatch = path.match(/^\/unacs\/subtitles\/(\w+)\/(.+)\.json$/);
+  if (unacsMatch) {
+    const [, type, id] = unacsMatch;
+    const { imdbId, season, episode } = parseRequest(id);
+    console.log(`[unacs request] ${type} ${imdbId} S${season}E${episode}`);
+
+    const titleInfo = await getTitleFromImdb(imdbId);
+    if (!titleInfo) return res.end(JSON.stringify({ subtitles: [] }));
+    const { title, year } = titleInfo;
+    console.log(`[title] "${title}" (${year})`);
+
+    const unacsResults = await searchUnacs(title, year, season, episode).catch(e => { console.error('[unacs] search failed:', e.message); return []; });
+    console.log(`[unacs found] ${unacsResults.length}`);
+
+    const host = req.headers.host || `localhost:${PORT}`;
+    const subtitles = [];
     for (const s of unacsResults.slice(0, 8)) {
       try {
         const key = `unacs__${s.subSlug}__${season ?? 'n'}__${episode ?? 'n'}`;
@@ -673,19 +708,17 @@ const server = http.createServer(async (req, res) => {
           if (!data) continue;
           srtCache.set(key, toUtf8Srt(data));
         }
-        const proxyUrl = `https://${host}/proxy/${encodeURIComponent(key)}.srt`;
         subtitles.push({
           id: `unacs-${s.subId}`,
-          url: proxyUrl,
+          url: `https://${host}/proxy/${encodeURIComponent(key)}.srt`,
           lang: s.lang,
-          name: `[unacs] ${s.subTitle}`,
+          name: `${s.subTitle}`,
         });
       } catch (e) {
         console.error(`[unacs proxy] error for ${s.subSlug}:`, e.message);
       }
     }
-
-    console.log(`[response] ${subtitles.length} subtitles`);
+    console.log(`[unacs response] ${subtitles.length} subtitles`);
     res.setHeader('Content-Type', 'application/json');
     return res.end(JSON.stringify({ subtitles }));
   }
@@ -697,12 +730,10 @@ const server = http.createServer(async (req, res) => {
 server.listen(PORT, () => {
   console.log(`
 ╔══════════════════════════════════════════════════════╗
-║         Sabs Subtitles — Stremio Addon               ║
+║         BG Subtitles — Stremio Addon                 ║
 ╠══════════════════════════════════════════════════════╣
-║  Manifest: http://localhost:${PORT}/manifest.json       ║
-║                                                      ║
-║  Install in Stremio:                                 ║
-║  Paste: https://sub-gatherer.onrender.com/manifest.json ║
+║  SAB:   https://sub-gatherer.onrender.com/sabs/manifest.json  ║
+║  UNACS: https://sub-gatherer.onrender.com/unacs/manifest.json ║
 ╚══════════════════════════════════════════════════════╝
 `);
 });
