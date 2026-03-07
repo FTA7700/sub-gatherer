@@ -101,7 +101,7 @@ async function searchSubtitles(imdbId, title, season, episode) {
     const titleMatch = row.match(/act=download[^"]*"[^>]*>([^<]+)/);
     const subTitle = titleMatch ? titleMatch[1].trim() : query;
 
-    const langMatch = row.match(/Български|Bulgarian/i)
+    const lang = row.match(/Български|Bulgarian/i)
       ? 'bul'
       : row.match(/English/i)
       ? 'eng'
@@ -118,7 +118,7 @@ async function searchSubtitles(imdbId, title, season, episode) {
 
     results.push({
       title: subTitle,
-      lang: langMatch,
+      lang,
       fps,
       attachId,
       sid,
@@ -226,7 +226,58 @@ function parseZip(buf) {
   return entries;
 }
 
-// ─── IMDb title lookup ────────────────────────────────────────────────────────
+// ─── RAR extraction via unrar binary ─────────────────────────────────────────
+
+async function extractSrtFromRar(rarBuf, season, episode) {
+  const { spawn } = require('child_process');
+  const fs = require('fs');
+  const path = require('path');
+  const os = require('os');
+
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'sabs-'));
+  const rarPath = path.join(tmpDir, 'sub.rar');
+  fs.writeFileSync(rarPath, rarBuf);
+
+  return new Promise((resolve) => {
+    const proc = spawn('unrar', ['e', '-y', rarPath, tmpDir]);
+    proc.on('close', (code) => {
+      try {
+        const files = fs.readdirSync(tmpDir).filter(f => f.toLowerCase().endsWith('.srt'));
+        console.log(`[rar] extracted files: ${files.join(', ')}`);
+
+        let chosen = files[0];
+        if (season && episode && files.length > 1) {
+          const s = String(season).padStart(2, '0');
+          const e = String(episode).padStart(2, '0');
+          const patterns = [
+            new RegExp(`S${s}E${e}`, 'i'),
+            new RegExp(`${season}x${e}`, 'i'),
+          ];
+          for (const pat of patterns) {
+            const match = files.find(f => pat.test(f));
+            if (match) { chosen = match; break; }
+          }
+        }
+
+        if (chosen) {
+          const data = fs.readFileSync(path.join(tmpDir, chosen));
+          // Cleanup
+          try { fs.rmSync(tmpDir, { recursive: true }); } catch (_) {}
+          resolve(data);
+        } else {
+          resolve(null);
+        }
+      } catch (e) {
+        console.error('[rar] read error:', e.message);
+        resolve(null);
+      }
+    });
+    proc.on('error', (e) => {
+      console.error('[rar] spawn error:', e.message);
+      resolve(null);
+    });
+  });
+}
 
 const titleCache = new Map();
 
@@ -307,8 +358,9 @@ async function buildSrtProxy(attachId, season, episode) {
 
   const ct = (headers['content-type'] || '').toLowerCase();
   const cd = (headers['content-disposition'] || '').toLowerCase();
-  const isZip = ct.includes('zip') || cd.includes('.zip') || cd.includes('zip');
-  console.log(`[proxy] content-type: ${ct}, content-disposition: ${cd}, isZip: ${isZip}`);
+  const isZip = ct.includes('zip') || cd.includes('.zip');
+  const isRar = cd.includes('.rar') || ct.includes('rar');
+  console.log(`[proxy] content-type: ${ct}, content-disposition: ${cd}, isZip: ${isZip}, isRar: ${isRar}`);
 
   if (isZip) {
     const entry = extractSrtFromZip(buffer, season, episode);
@@ -321,6 +373,17 @@ async function buildSrtProxy(attachId, season, episode) {
     if (entries.length) {
       srtCache.set(key, entries[0].data);
       return key;
+    }
+    return null;
+  } else if (isRar) {
+    try {
+      const srtData = await extractSrtFromRar(buffer, season, episode);
+      if (srtData) {
+        srtCache.set(key, srtData);
+        return key;
+      }
+    } catch (e) {
+      console.error(`[proxy] rar extraction error: ${e.message}`);
     }
     return null;
   } else {
