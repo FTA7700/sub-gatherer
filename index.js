@@ -403,7 +403,8 @@ const server = http.createServer(async (req, res) => {
   const subMatch = path.match(/^\/subtitles\/(\w+)\/(.+)\.json$/);
   if (subMatch) {
     const [, type, id] = subMatch;
-    const parts = id.split(':');
+    const decodedId = decodeURIComponent(id);
+    const parts = decodedId.split(':');
     const imdbId = parts[0].split('/')[0];
     const season = parts[1] ? parseInt(parts[1]) : null;
     const episode = parts[2] ? parseInt(parts[2]) : null;
