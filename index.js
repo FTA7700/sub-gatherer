@@ -422,12 +422,12 @@ async function searchUnacs(title, year, season, episode) {
     query = `${title} S${s}E${e}`;
   }
 
-  const body = `s=${encodeURIComponent(query)}&l=&c=&y=&u=&g=&submit=`;
+  const body = `m=${encodeURIComponent(query)}&l=0&t=Submit&action=+%D2%FA%F0%F1%E8+`;
   console.log(`[unacs] searching: "${query}"`);
 
   let html;
   try {
-    const { buffer } = await fetchPost(`${UNACS_BASE}/search.php`, body);
+    const { buffer } = await fetchPost(`${UNACS_BASE}/search.php`, body, { 'Referer': `${UNACS_BASE}/index.php` });
     html = decodeWindows1251(buffer);
   } catch (e) {
     console.error('[unacs] search error:', e.message);
