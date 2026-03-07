@@ -333,6 +333,49 @@ async function extractSrtFromRar(rarBuf, season, episode, depth = 0) {
   return null;
 }
 
+async function extractAllSrtsFromRar(rarBuf, depth = 0) {
+  if (depth > 3) return [];
+  const results = [];
+  try {
+    const { createExtractorFromData } = require('node-unrar-js');
+    const extractor = await createExtractorFromData({ data: rarBuf });
+    const list = extractor.getFileList();
+    const fileHeaders = [...list.fileHeaders];
+    const srtHeaders = fileHeaders.filter(f => /\.(srt|sub)$/i.test(f.name));
+    if (srtHeaders.length > 0) {
+      for (const h of srtHeaders) {
+        const extracted = extractor.extract({ files: [h.name] });
+        const files = [...extracted.files];
+        if (files.length && files[0].extraction) {
+          results.push({ name: h.name, data: Buffer.from(files[0].extraction) });
+        }
+      }
+      return results;
+    }
+    const rarHeaders = fileHeaders.filter(f => f.name.toLowerCase().endsWith('.rar'));
+    for (const h of rarHeaders) {
+      const extracted = extractor.extract({ files: [h.name] });
+      const files = [...extracted.files];
+      if (files.length && files[0].extraction) {
+        const nested = await extractAllSrtsFromRar(Buffer.from(files[0].extraction), depth + 1);
+        results.push(...nested);
+      }
+    }
+    const zipHeaders = fileHeaders.filter(f => f.name.toLowerCase().endsWith('.zip'));
+    for (const h of zipHeaders) {
+      const extracted = extractor.extract({ files: [h.name] });
+      const files = [...extracted.files];
+      if (files.length && files[0].extraction) {
+        const entries = parseZip(Buffer.from(files[0].extraction)).filter(e => /\.(srt|sub)$/i.test(e.name));
+        results.push(...entries);
+      }
+    }
+  } catch(e) {
+    console.error(`[rar:all:${depth}] error: ${e.message}`);
+  }
+  return results;
+}
+
 const titleCache = new Map();
 
 async function getTitleFromImdb(imdbId) {
@@ -514,24 +557,25 @@ async function downloadUnacs(subSlug, season, episode) {
   console.log(`[unacs] ct: ${ct}, cd: ${cd}, isZip: ${isZip}, isRar: ${isRar}, size: ${buffer.length}`);
 
   if (isRar) {
-    return await extractSrtFromRar(buffer, season, episode);
+    if (season && episode) {
+      const data = await extractSrtFromRar(buffer, season, episode);
+      return data ? [{ name: subSlug, data }] : [];
+    }
+    return await extractAllSrtsFromRar(buffer);
   }
 
   if (isZip) {
-    const entry = extractSrtFromZip(buffer, season, episode);
-    if (entry) {
-      console.log(`[unacs] extracted srt: ${entry.name}`);
-      return entry.data;
-    }
+    const entries = parseZip(buffer).filter(e => /\.(srt|sub)$/i.test(e.name));
+    if (entries.length) return entries;
     console.log(`[unacs] no srt found in zip`);
-    return null;
+    return [];
   }
 
   // Maybe bare SRT
   const str = buffer.slice(0, 30).toString('latin1');
-  if (/^\s*\d/.test(str) || str.includes('-->')) return buffer;
+  if (/^\s*\d/.test(str) || str.includes('-->')) return [{ name: subSlug + '.srt', data: buffer }];
 
-  return null;
+  return [];
 }
 
 // ─── Proxy endpoint ───────────────────────────────────────────────────────────
@@ -631,10 +675,14 @@ const server = http.createServer(async (req, res) => {
       const subSlug = parts[1];
       const season = parts[2] !== 'n' ? parseInt(parts[2]) : null;
       const episode = parts[3] !== 'n' ? parseInt(parts[3]) : null;
+      const entryIdx = parts[4] !== undefined ? parseInt(parts[4]) : null;
       console.log(`[proxy] cache miss, re-downloading unacs: ${subSlug}`);
       try {
-        data = await downloadUnacs(subSlug, season, episode);
-        if (data) srtCache.set(key, toUtf8Srt(data));
+        const entries = await downloadUnacs(subSlug, season, episode);
+        if (entries.length) {
+          const entry = entryIdx !== null ? entries[entryIdx] : entries[0];
+          if (entry) { data = entry.data; srtCache.set(key, toUtf8Srt(data)); }
+        }
       } catch (e) {
         console.error('[proxy] unacs re-download failed:', e.message);
       }
@@ -701,19 +749,25 @@ const server = http.createServer(async (req, res) => {
     const host = req.headers.host || `localhost:${PORT}`;
     const subtitles = [];
     for (const s of unacsResults.slice(0, 8)) {
+      if (subtitles.length >= 10) break;
       try {
-        const key = `unacs__${s.subSlug}__${season ?? 'n'}__${episode ?? 'n'}`;
-        if (!srtCache.has(key)) {
-          const data = await downloadUnacs(s.subSlug, season, episode);
-          if (!data) continue;
-          srtCache.set(key, toUtf8Srt(data));
+        const baseKey = `unacs__${s.subSlug}__${season ?? 'n'}__${episode ?? 'n'}`;
+        const cachedKeys = [...srtCache.keys()].filter(k => k.startsWith(baseKey));
+        if (cachedKeys.length > 0) {
+          for (const k of cachedKeys) {
+            subtitles.push({ id: `unacs-${s.subId}-${k}`, url: `https://${host}/proxy/${encodeURIComponent(k)}.srt`, lang: s.lang, name: s.subTitle });
+          }
+          continue;
         }
-        subtitles.push({
-          id: `unacs-${s.subId}`,
-          url: `https://${host}/proxy/${encodeURIComponent(key)}.srt`,
-          lang: s.lang,
-          name: `${s.subTitle}`,
-        });
+        const entries = await downloadUnacs(s.subSlug, season, episode);
+        if (!entries.length) continue;
+        for (let i = 0; i < entries.length; i++) {
+          const key = entries.length === 1 ? baseKey : `${baseKey}__${i}`;
+          srtCache.set(key, toUtf8Srt(entries[i].data));
+          const srtName = entries[i].name.split('/').pop().replace(/\.(srt|sub)$/i, '');
+          subtitles.push({ id: `unacs-${s.subId}-${i}`, url: `https://${host}/proxy/${encodeURIComponent(key)}.srt`, lang: s.lang, name: srtName || s.subTitle });
+          if (subtitles.length >= 10) break;
+        }
       } catch (e) {
         console.error(`[unacs proxy] error for ${s.subSlug}:`, e.message);
       }
