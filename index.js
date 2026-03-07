@@ -235,39 +235,67 @@ function parseZip(buf) {
 
 // ─── RAR extraction via node-unrar-js ────────────────────────────────────────
 
-async function extractSrtFromRar(rarBuf, season, episode) {
+async function extractSrtFromRar(rarBuf, season, episode, depth = 0) {
+  if (depth > 3) return null; // prevent infinite recursion
   try {
     const { createExtractorFromData } = require('node-unrar-js');
     const extractor = await createExtractorFromData({ data: rarBuf });
     const list = extractor.getFileList();
     const fileHeaders = [...list.fileHeaders];
+
     const srtHeaders = fileHeaders.filter(f => f.name.toLowerCase().endsWith('.srt'));
-    console.log(`[rar] found srts: ${srtHeaders.map(f => f.name).join(', ')}`);
+    const rarHeaders = fileHeaders.filter(f => f.name.toLowerCase().endsWith('.rar'));
+    const zipHeaders = fileHeaders.filter(f => f.name.toLowerCase().endsWith('.zip'));
 
-    if (srtHeaders.length === 0) return null;
+    console.log(`[rar:${depth}] srts: ${srtHeaders.length}, nested rars: ${rarHeaders.length}, nested zips: ${zipHeaders.length}`);
 
-    let chosen = srtHeaders[0];
-    if (season && episode && srtHeaders.length > 1) {
-      const s = String(season).padStart(2, '0');
-      const e = String(episode).padStart(2, '0');
-      const patterns = [
-        new RegExp(`S${s}E${e}`, 'i'),
-        new RegExp(`${season}x${e}`, 'i'),
-      ];
-      for (const pat of patterns) {
-        const match = srtHeaders.find(f => pat.test(f.name));
-        if (match) { chosen = match; break; }
+    // Direct SRTs found — pick best match
+    if (srtHeaders.length > 0) {
+      let chosen = srtHeaders[0];
+      if (season && episode && srtHeaders.length > 1) {
+        const s = String(season).padStart(2, '0');
+        const e = String(episode).padStart(2, '0');
+        const patterns = [
+          new RegExp(`S${s}E${e}`, 'i'),
+          new RegExp(`${season}x${e}`, 'i'),
+        ];
+        for (const pat of patterns) {
+          const match = srtHeaders.find(f => pat.test(f.name));
+          if (match) { chosen = match; break; }
+        }
+      }
+      const extracted = extractor.extract({ files: [chosen.name] });
+      const files = [...extracted.files];
+      if (files.length && files[0].extraction) {
+        console.log(`[rar:${depth}] extracted: ${chosen.name}`);
+        return Buffer.from(files[0].extraction);
       }
     }
 
-    const extracted = extractor.extract({ files: [chosen.name] });
-    const files = [...extracted.files];
-    if (files.length && files[0].extraction) {
-      console.log(`[rar] extracted: ${chosen.name}`);
-      return Buffer.from(files[0].extraction);
+    // No direct SRTs — recurse into nested RARs
+    for (const rarHeader of rarHeaders) {
+      console.log(`[rar:${depth}] diving into nested rar: ${rarHeader.name}`);
+      const extracted = extractor.extract({ files: [rarHeader.name] });
+      const files = [...extracted.files];
+      if (files.length && files[0].extraction) {
+        const result = await extractSrtFromRar(Buffer.from(files[0].extraction), season, episode, depth + 1);
+        if (result) return result;
+      }
     }
+
+    // Recurse into nested ZIPs
+    for (const zipHeader of zipHeaders) {
+      console.log(`[rar:${depth}] diving into nested zip: ${zipHeader.name}`);
+      const extracted = extractor.extract({ files: [zipHeader.name] });
+      const files = [...extracted.files];
+      if (files.length && files[0].extraction) {
+        const entry = extractSrtFromZip(Buffer.from(files[0].extraction), season, episode);
+        if (entry) return entry.data;
+      }
+    }
+
   } catch (e) {
-    console.error(`[rar] extraction error: ${e.message}`);
+    console.error(`[rar:${depth}] extraction error: ${e.message}`);
   }
   return null;
 }
