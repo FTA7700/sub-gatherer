@@ -71,6 +71,16 @@ function decodeWindows1251(buf) {
   return result;
 }
 
+function toUtf8Srt(buf) {
+  // If already valid UTF-8 with Cyrillic, return as-is
+  try {
+    const s = buf.toString('utf8');
+    if (!s.includes('\uFFFD')) return buf;
+  } catch(e) {}
+  // Convert Windows-1251 to UTF-8
+  return Buffer.from(decodeWindows1251(buf), 'utf8');
+}
+
 // ─── Search subs.sab.bz ───────────────────────────────────────────────────────
 
 async function searchSubtitles(imdbId, title, season, episode) {
@@ -539,12 +549,12 @@ async function buildSrtProxy(attachId, season, episode) {
     const entry = extractSrtFromZip(buffer, season, episode);
     if (entry) {
       console.log(`[proxy] extracted srt: ${entry.name}`);
-      srtCache.set(key, entry.data);
+      srtCache.set(key, toUtf8Srt(entry.data));
       return key;
     }
     const entries = parseZip(buffer).filter(e => e.name.toLowerCase().endsWith('.srt'));
     if (entries.length) {
-      srtCache.set(key, entries[0].data);
+      srtCache.set(key, toUtf8Srt(entries[0].data));
       return key;
     }
     return null;
@@ -552,7 +562,7 @@ async function buildSrtProxy(attachId, season, episode) {
     try {
       const srtData = await extractSrtFromRar(buffer, season, episode);
       if (srtData) {
-        srtCache.set(key, srtData);
+        srtCache.set(key, toUtf8Srt(srtData));
         return key;
       }
     } catch (e) {
@@ -560,7 +570,7 @@ async function buildSrtProxy(attachId, season, episode) {
     }
     return null;
   } else {
-    srtCache.set(key, buffer);
+    srtCache.set(key, toUtf8Srt(buffer));
     return key;
   }
 }
@@ -583,16 +593,16 @@ const server = http.createServer(async (req, res) => {
   if (proxyMatch) {
     const key = decodeURIComponent(proxyMatch[1]);
     let data = srtCache.get(key);
-    if (!data && key.startsWith('unacs|')) {
+    if (!data && key.startsWith('unacs__')) {
       // Re-download if cache was lost (e.g. cold start)
-      const parts = key.split('|');
+      const parts = key.split('__');
       const subSlug = parts[1];
       const season = parts[2] !== 'n' ? parseInt(parts[2]) : null;
       const episode = parts[3] !== 'n' ? parseInt(parts[3]) : null;
       console.log(`[proxy] cache miss, re-downloading unacs: ${subSlug}`);
       try {
         data = await downloadUnacs(subSlug, season, episode);
-        if (data) srtCache.set(key, data);
+        if (data) srtCache.set(key, toUtf8Srt(data));
       } catch (e) {
         console.error('[proxy] unacs re-download failed:', e.message);
       }
@@ -657,11 +667,11 @@ const server = http.createServer(async (req, res) => {
     // Process subsunacs results
     for (const s of unacsResults.slice(0, 8)) {
       try {
-        const key = `unacs|${s.subSlug}|${season ?? 'n'}|${episode ?? 'n'}`;
+        const key = `unacs__${s.subSlug}__${season ?? 'n'}__${episode ?? 'n'}`;
         if (!srtCache.has(key)) {
           const data = await downloadUnacs(s.subSlug, season, episode);
           if (!data) continue;
-          srtCache.set(key, data);
+          srtCache.set(key, toUtf8Srt(data));
         }
         const proxyUrl = `https://${host}/proxy/${encodeURIComponent(key)}.srt`;
         subtitles.push({
