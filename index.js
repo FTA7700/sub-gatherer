@@ -74,53 +74,59 @@ function decodeWindows1251(buf) {
 // ─── Search subs.sab.bz ───────────────────────────────────────────────────────
 
 async function searchSubtitles(imdbId, title, season, episode) {
-  const query = buildQuery(title, season, episode);
-  const searchUrl = `${BASE_URL}/index.php?act=search&movie=${encodeURIComponent(query)}`;
-  console.log(`[search] URL: ${searchUrl}`);
-
-  let html;
-  try {
-    html = await fetchText(searchUrl);
-    console.log(`[search] got ${html.length} bytes`);
-  } catch (e) {
-    console.error('[search] fetch error:', e.message);
-    return [];
-  }
-
+  const queries = buildQueries(title, season, episode);
+  const seen = new Set();
   const results = [];
-  const rowRe = /<tr[^>]*>([\s\S]*?)<\/tr>/gi;
-  let rowMatch;
 
-  while ((rowMatch = rowRe.exec(html)) !== null) {
-    const row = rowMatch[1];
+  for (const query of queries) {
+    const searchUrl = `${BASE_URL}/index.php?act=search&movie=${encodeURIComponent(query)}`;
+    console.log(`[search] URL: ${searchUrl}`);
 
-    const dlMatch = row.match(/act=download&(?:amp;)?attach_id=(\d+)/);
-    if (!dlMatch) continue;
-    const attachId = dlMatch[1];
+    let html;
+    try {
+      html = await fetchText(searchUrl);
+      console.log(`[search] got ${html.length} bytes`);
+    } catch (e) {
+      console.error('[search] fetch error:', e.message);
+      continue;
+    }
 
-    const titleMatch = row.match(/act=download[^"]*"[^>]*>([^<]+)/);
-    const subTitle = titleMatch ? titleMatch[1].trim() : query;
+    const rowRe = /<tr[^>]*>([\s\S]*?)<\/tr>/gi;
+    let rowMatch;
 
-    const lang = row.match(/English/i) ? 'eng' : 'bul';
+    while ((rowMatch = rowRe.exec(html)) !== null) {
+      const row = rowMatch[1];
 
-    const fpsMatch = row.match(/(\d{2}\.\d{3})/);
-    const fps = fpsMatch ? fpsMatch[1] : '';
+      const dlMatch = row.match(/act=download&(?:amp;)?attach_id=(\d+)/);
+      if (!dlMatch) continue;
+      const attachId = dlMatch[1];
+      if (seen.has(attachId)) continue;
+      seen.add(attachId);
 
-    const imdbMatch = row.match(/imdb\.com\/title\/(tt\d+)/);
-    const rowImdb = imdbMatch ? imdbMatch[1] : null;
+      const titleMatch = row.match(/act=download[^"]*"[^>]*>([^<]+)/);
+      const subTitle = titleMatch ? titleMatch[1].trim() : query;
 
-    const sidMatch = row.match(/act=details&(?:amp;)?sid=(\d+)/);
-    const sid = sidMatch ? sidMatch[1] : null;
+      const lang = row.match(/English/i) ? 'eng' : 'bul';
 
-    results.push({
-      title: subTitle,
-      lang,
-      fps,
-      attachId,
-      sid,
-      rowImdb,
-      downloadUrl: `${BASE_URL}/index.php?act=download&attach_id=${attachId}`,
-    });
+      const fpsMatch = row.match(/(\d{2}\.\d{3})/);
+      const fps = fpsMatch ? fpsMatch[1] : '';
+
+      const imdbMatch = row.match(/imdb\.com\/title\/(tt\d+)/);
+      const rowImdb = imdbMatch ? imdbMatch[1] : null;
+
+      const sidMatch = row.match(/act=details&(?:amp;)?sid=(\d+)/);
+      const sid = sidMatch ? sidMatch[1] : null;
+
+      results.push({
+        title: subTitle,
+        lang,
+        fps,
+        attachId,
+        sid,
+        rowImdb,
+        downloadUrl: `${BASE_URL}/index.php?act=download&attach_id=${attachId}`,
+      });
+    }
   }
 
   console.log(`[search] parsed ${results.length} results`);
@@ -132,13 +138,18 @@ async function searchSubtitles(imdbId, title, season, episode) {
   return results;
 }
 
-function buildQuery(title, season, episode) {
+function buildQueries(title, season, episode) {
   if (season && episode) {
     const s = String(season).padStart(2, '0');
     const e = String(episode).padStart(2, '0');
-    return `${title} S${s}E${e}`;
+    // Try both S02E01 and 02x01 formats, plus season pack
+    return [
+      `${title} ${s}x${e}`,
+      `${title} S${s}E${e}`,
+      `${title} Season ${season}`,
+    ];
   }
-  return title;
+  return [title];
 }
 
 // ─── ZIP extraction ───────────────────────────────────────────────────────────
