@@ -17,9 +17,9 @@ const BASE_URL = 'http://subs.sab.bz';
 
 const MANIFEST = {
   id: 'community.sabsubs',
-  version: '1.0.0',
-  name: 'Sabs Subtitles',
-  description: 'Bulgarian & English subtitles from subs.sab.bz',
+  version: '1.1.0',
+  name: 'BG Subtitles',
+  description: 'Bulgarian & English subtitles from subs.sab.bz and subsunacs.net',
   types: ['movie', 'series'],
   catalogs: [],
   resources: ['subtitles'],
@@ -156,7 +156,7 @@ function buildQueries(title, season, episode) {
 
 function extractSrtFromZip(zipBuf, season, episode) {
   const entries = parseZip(zipBuf);
-  const srts = entries.filter(e => e.name.toLowerCase().endsWith('.srt'));
+  const srts = entries.filter(e => /\.(srt|sub)$/i.test(e.name));
   if (srts.length === 0) return null;
   if (srts.length === 1) return srts[0];
   if (!season || !episode) return srts[0];
@@ -326,8 +326,9 @@ async function getTitleFromImdb(imdbId) {
       const data = JSON.parse(buffer.toString());
       console.log(`[omdb] response: ${JSON.stringify(data).slice(0, 120)}`);
       if (data.Title) {
-        titleCache.set(imdbId, data.Title);
-        return data.Title;
+        const result = { title: data.Title, year: data.Year ? parseInt(data.Year) : null };
+        titleCache.set(imdbId, result);
+        return result;
       }
     } catch (e) {
       console.log(`[omdb] error: ${e.message}`);
@@ -338,12 +339,12 @@ async function getTitleFromImdb(imdbId) {
   try {
     console.log(`[imdb] scraping title for ${imdbId}`);
     const html = await fetchText(`https://www.imdb.com/title/${imdbId}/`);
-    const m = html.match(/<title>([^<]+?) \(/);
+    const m = html.match(/<title>([^<]+?) \((\d{4})/);
     if (m) {
-      const t = m[1].trim();
-      console.log(`[imdb] found: ${t}`);
-      titleCache.set(imdbId, t);
-      return t;
+      const result = { title: m[1].trim(), year: parseInt(m[2]) };
+      console.log(`[imdb] found: ${result.title} (${result.year})`);
+      titleCache.set(imdbId, result);
+      return result;
     }
   } catch (e) {
     console.log(`[imdb] error: ${e.message}`);
@@ -361,8 +362,9 @@ async function getTitleFromImdb(imdbId) {
         .trim();
       console.log(`[sabs] extracted title: ${raw}`);
       if (raw) {
-        titleCache.set(imdbId, raw);
-        return raw;
+        const result = { title: raw, year: null };
+        titleCache.set(imdbId, result);
+        return result;
       }
     }
   } catch (e) {
@@ -370,6 +372,144 @@ async function getTitleFromImdb(imdbId) {
   }
 
   console.log(`[title] failed for ${imdbId}`);
+  return null;
+}
+
+// ─── subsunacs.net ────────────────────────────────────────────────────────────
+
+const UNACS_BASE = 'https://subsunacs.net';
+
+function fetchPost(urlStr, body, extraHeaders = {}) {
+  return new Promise((resolve, reject) => {
+    const u = new URL(urlStr);
+    const postData = Buffer.from(body, 'utf8');
+    const options = {
+      hostname: u.hostname,
+      port: 443,
+      path: u.pathname + u.search,
+      method: 'POST',
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:120.0) Gecko/20100101 Firefox/120.0',
+        'Content-Type': 'application/x-www-form-urlencoded',
+        'Content-Length': postData.length,
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+        'Accept-Language': 'bg,en;q=0.5',
+        'Referer': UNACS_BASE + '/search.php',
+        ...extraHeaders,
+      },
+    };
+    const req = https.request(options, (res) => {
+      if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
+        const loc = res.headers.location.startsWith('http') ? res.headers.location : UNACS_BASE + res.headers.location;
+        return fetchBuffer(loc).then(resolve).catch(reject);
+      }
+      const chunks = [];
+      res.on('data', (c) => chunks.push(c));
+      res.on('end', () => resolve({ buffer: Buffer.concat(chunks), headers: res.headers }));
+    });
+    req.on('error', reject);
+    req.setTimeout(15000, () => { req.destroy(); reject(new Error('Timeout')); });
+    req.write(postData);
+    req.end();
+  });
+}
+
+async function searchUnacs(title, year, season, episode) {
+  let query = title;
+  if (season && episode) {
+    const s = String(season).padStart(2, '0');
+    const e = String(episode).padStart(2, '0');
+    query = `${title} S${s}E${e}`;
+  }
+
+  const body = `s=${encodeURIComponent(query)}&l=&c=&y=&u=&g=&submit=`;
+  console.log(`[unacs] searching: "${query}"`);
+
+  let html;
+  try {
+    const { buffer } = await fetchPost(`${UNACS_BASE}/search.php`, body);
+    html = decodeWindows1251(buffer);
+  } catch (e) {
+    console.error('[unacs] search error:', e.message);
+    return [];
+  }
+
+  const results = [];
+  const seen = new Set();
+
+  const rowRe = /<tr[^>]*>([\s\S]*?)<\/tr>/gi;
+  let rowMatch;
+  while ((rowMatch = rowRe.exec(html)) !== null) {
+    const row = rowMatch[1];
+
+    const linkMatch = row.match(/href="\/subtitles\/([^/]+)-(\d+)\/"/i);
+    if (!linkMatch) continue;
+
+    const subId = linkMatch[2];
+    if (seen.has(subId)) continue;
+    seen.add(subId);
+
+    const subSlug = linkMatch[1] + '-' + subId;
+    const yearMatch = row.match(/\((\d{4})\)/);
+    const rowYear = yearMatch ? parseInt(yearMatch[1]) : null;
+    const titleMatch = row.match(/href="\/subtitles\/[^"]+">([^<]+)<\/a>/i);
+    const subTitle = titleMatch ? titleMatch[1].trim() : subSlug;
+    const lang = /english|английски/i.test(row) ? 'eng' : 'bul';
+
+    results.push({ subId, subSlug, subTitle, rowYear, lang,
+      downloadUrl: `${UNACS_BASE}/subtitles/${subSlug}/`,
+    });
+  }
+
+  console.log(`[unacs] parsed ${results.length} results`);
+
+  if (year && results.some(r => r.rowYear === year)) {
+    return results.filter(r => r.rowYear === year);
+  }
+
+  return results;
+}
+
+async function downloadUnacs(subSlug, season, episode) {
+  const url = `${UNACS_BASE}/subtitles/${subSlug}/`;
+  console.log(`[unacs] downloading ${url}`);
+
+  const { buffer, headers } = await fetchBuffer(url, {
+    'Referer': `${UNACS_BASE}/subtitles/${subSlug}/!`,
+    'Accept': 'application/octet-stream,*/*',
+    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:120.0) Gecko/20100101 Firefox/120.0',
+  });
+
+  const ct = (headers['content-type'] || '').toLowerCase();
+  const cd = (headers['content-disposition'] || '').toLowerCase();
+
+  // Detect format by magic bytes first, fall back to headers
+  const magic4 = buffer.slice(0, 4);
+  const isZipMagic = magic4[0] === 0x50 && magic4[1] === 0x4b;
+  const isRarMagic = magic4[0] === 0x52 && magic4[1] === 0x61 && magic4[2] === 0x72 && magic4[3] === 0x21;
+  const isRar = isRarMagic || cd.includes('.rar') || ct.includes('rar');
+  const isZip = isZipMagic || cd.includes('.zip') || ct.includes('zip');
+
+  console.log(`[unacs] ct: ${ct}, cd: ${cd}, isZip: ${isZip}, isRar: ${isRar}, size: ${buffer.length}`);
+
+  if (isRar) {
+    return await extractSrtFromRar(buffer, season, episode);
+  }
+
+  if (isZip) {
+    const entry = extractSrtFromZip(buffer, season, episode);
+    if (entry) {
+      console.log(`[unacs] extracted srt: ${entry.name}`);
+      return entry.data;
+    }
+    console.log(`[unacs] no srt found in zip`);
+    return null;
+  }
+
+  // Maybe bare SRT
+  const str = buffer.slice(0, 30).toString('latin1');
+  if (/^\s*\d/.test(str) || str.includes('-->')) return buffer;
+
   return null;
 }
 
@@ -462,26 +602,33 @@ const server = http.createServer(async (req, res) => {
 
     console.log(`[request] ${type} ${imdbId} S${season}E${episode}`);
 
-    const title = await getTitleFromImdb(imdbId);
-    if (!title) {
+    const titleInfo = await getTitleFromImdb(imdbId);
+    if (!titleInfo) {
       console.log(`[request] no title found, returning empty`);
       res.setHeader('Content-Type', 'application/json');
       return res.end(JSON.stringify({ subtitles: [] }));
     }
 
-    console.log(`[title] "${title}"`);
-    const subs = await searchSubtitles(imdbId, title, season, episode);
-    console.log(`[found] ${subs.length} results`);
+    const { title, year } = titleInfo;
+    console.log(`[title] "${title}" (${year})`);
 
+    // Run both sources in parallel
+    const [sabsResults, unacsResults] = await Promise.all([
+      searchSubtitles(imdbId, title, season, episode).catch(e => { console.error('[sabs] search failed:', e.message); return []; }),
+      searchUnacs(title, year, season, episode).catch(e => { console.error('[unacs] search failed:', e.message); return []; }),
+    ]);
+
+    console.log(`[found] sabs: ${sabsResults.length}, unacs: ${unacsResults.length}`);
+
+    const host = req.headers.host || `localhost:${PORT}`;
     const subtitles = [];
-    for (const s of subs.slice(0, 10)) {
+
+    // Process sabs results
+    for (const s of sabsResults.slice(0, 8)) {
       try {
         const key = await buildSrtProxy(s.attachId, season, episode);
         if (!key) continue;
-
-        const host = req.headers.host || `localhost:${PORT}`;
         const proxyUrl = `https://${host}/proxy/${encodeURIComponent(key)}.srt`;
-
         subtitles.push({
           id: `sabsub-${s.attachId}`,
           url: proxyUrl,
@@ -489,7 +636,28 @@ const server = http.createServer(async (req, res) => {
           name: `[sabs] ${s.title}${s.fps ? ` • ${s.fps}fps` : ''}`,
         });
       } catch (e) {
-        console.error(`[proxy] error for ${s.attachId}:`, e.message);
+        console.error(`[sabs proxy] error for ${s.attachId}:`, e.message);
+      }
+    }
+
+    // Process subsunacs results
+    for (const s of unacsResults.slice(0, 5)) {
+      try {
+        const key = `unacs-${s.subId}-${season}-${episode}`;
+        if (!srtCache.has(key)) {
+          const data = await downloadUnacs(s.subSlug, season, episode);
+          if (!data) continue;
+          srtCache.set(key, data);
+        }
+        const proxyUrl = `https://${host}/proxy/${encodeURIComponent(key)}.srt`;
+        subtitles.push({
+          id: `unacs-${s.subId}`,
+          url: proxyUrl,
+          lang: s.lang,
+          name: `[unacs] ${s.subTitle}`,
+        });
+      } catch (e) {
+        console.error(`[unacs proxy] error for ${s.subSlug}:`, e.message);
       }
     }
 
