@@ -582,7 +582,21 @@ const server = http.createServer(async (req, res) => {
   const proxyMatch = path.match(/^\/proxy\/(.+)\.srt$/);
   if (proxyMatch) {
     const key = decodeURIComponent(proxyMatch[1]);
-    const data = srtCache.get(key);
+    let data = srtCache.get(key);
+    if (!data && key.startsWith('unacs|')) {
+      // Re-download if cache was lost (e.g. cold start)
+      const parts = key.split('|');
+      const subSlug = parts[1];
+      const season = parts[2] !== 'n' ? parseInt(parts[2]) : null;
+      const episode = parts[3] !== 'n' ? parseInt(parts[3]) : null;
+      console.log(`[proxy] cache miss, re-downloading unacs: ${subSlug}`);
+      try {
+        data = await downloadUnacs(subSlug, season, episode);
+        if (data) srtCache.set(key, data);
+      } catch (e) {
+        console.error('[proxy] unacs re-download failed:', e.message);
+      }
+    }
     if (!data) {
       res.writeHead(404);
       return res.end('Not found');
@@ -641,9 +655,9 @@ const server = http.createServer(async (req, res) => {
     }
 
     // Process subsunacs results
-    for (const s of unacsResults.slice(0, 5)) {
+    for (const s of unacsResults.slice(0, 8)) {
       try {
-        const key = `unacs-${s.subId}-${season}-${episode}`;
+        const key = `unacs|${s.subSlug}|${season ?? 'n'}|${episode ?? 'n'}`;
         if (!srtCache.has(key)) {
           const data = await downloadUnacs(s.subSlug, season, episode);
           if (!data) continue;
