@@ -272,8 +272,20 @@ async function extractSrtFromRar(rarBuf, season, episode, depth = 0) {
       }
     }
 
-    // No direct SRTs — recurse into nested RARs
-    for (const rarHeader of rarHeaders) {
+    // No direct SRTs — recurse into nested RARs, best episode match first
+    let sortedRarHeaders = rarHeaders;
+    if (season && episode) {
+      const s = String(season).padStart(2, '0');
+      const e = String(episode).padStart(2, '0');
+      const patterns = [
+        new RegExp(`S${s}E${e}`, 'i'),
+        new RegExp(`${season}x${e}`, 'i'),
+      ];
+      const matched = rarHeaders.filter(f => patterns.some(p => p.test(f.name)));
+      const unmatched = rarHeaders.filter(f => !patterns.some(p => p.test(f.name)));
+      sortedRarHeaders = [...matched, ...unmatched];
+    }
+    for (const rarHeader of sortedRarHeaders) {
       console.log(`[rar:${depth}] diving into nested rar: ${rarHeader.name}`);
       const extracted = extractor.extract({ files: [rarHeader.name] });
       const files = [...extracted.files];
