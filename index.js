@@ -782,8 +782,8 @@ async function searchYavka(imdbId, title, season, episode) {
       const subId = m[1];
       if (seen.has(subId)) continue;
       seen.add(subId);
-      const start = Math.max(0, m.index - 200);
-      const snippet = searchArea.slice(start, m.index + 200);
+      const start = Math.max(0, m.index - 500);
+      const snippet = searchArea.slice(start, m.index + 500);
       const titleMatch = snippet.match(/tooltiptitle="([^"]+)"/i) || snippet.match(/>([^<]{5,60})<\/a>/i);
       const subTitle = titleMatch ? titleMatch[1].trim() : ('Yavka #' + subId);
       // Also capture the full row text for episode matching
@@ -794,6 +794,8 @@ async function searchYavka(imdbId, title, season, episode) {
     if (results.length > 0) {
       console.log('[yavka] titles:', results.map(r => r.subTitle).join(' | '));
       console.log('[yavka] row classes:', results.map(r => (r.rowText.match(/class="([^"]*season[^"]*)"/i) || [])[1] || '?').join(' | '));
+      console.log('[yavka] row0:', results[0].rowText.replace(/\s+/g, ' ').slice(0, 800));
+      if (results[1]) console.log('[yavka] row1:', results[1].rowText.replace(/\s+/g, ' ').slice(0, 800));
     }
 
     // For series: filter results by episode if we have S/E info
