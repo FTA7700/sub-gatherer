@@ -26,6 +26,17 @@ const MANIFEST_SABS = {
   idPrefixes: ['tt'],
 };
 
+const MANIFEST_YAVKA = {
+  id: 'community.yavkasubs',
+  version: '1.0.0',
+  name: 'Yavka Subtitles',
+  description: 'Bulgarian subtitles from yavka.net',
+  types: ['movie', 'series'],
+  catalogs: [],
+  resources: ['subtitles'],
+  idPrefixes: ['tt'],
+};
+
 const MANIFEST_UNACS = {
   id: 'community.unacsubs',
   version: '1.2.0',
@@ -460,6 +471,8 @@ async function getTitleFromImdb(imdbId) {
 // ─── subsunacs.net ────────────────────────────────────────────────────────────
 
 const UNACS_BASE = 'https://subsunacs.net';
+const YAVKA_BASE = 'https://yavka.net';
+const BROWSERLESS_TOKEN = process.env.BROWSERLESS_TOKEN || '';
 
 function fetchPost(urlStr, body, extraHeaders = {}) {
   return new Promise((resolve, reject) => {
@@ -691,6 +704,199 @@ async function buildSrtProxies(attachId, season, episode) {
   return keys;
 }
 
+// ─── Yavka.net via Browserless ───────────────────────────────────────────────
+
+// Uses browserless.io /function endpoint (Puppeteer) to handle Cloudflare Turnstile
+// API: https://production-sfo.browserless.io
+
+function browserlessRequest(code, context = {}, timeoutMs = 45000) {
+  if (!BROWSERLESS_TOKEN) throw new Error('No browserless token configured');
+  const fnBody = JSON.stringify({ code, context });
+  return new Promise((resolve, reject) => {
+    const endpoint = `https://production-sfo.browserless.io/function?token=${BROWSERLESS_TOKEN}`;
+    const u = new URL(endpoint);
+    const postData = Buffer.from(fnBody);
+    const req = https.request({
+      hostname: u.hostname, port: 443,
+      path: u.pathname + u.search,
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Content-Length': postData.length,
+      },
+    }, (res) => {
+      const chunks = [];
+      res.on('data', c => chunks.push(c));
+      res.on('end', () => {
+        const raw = Buffer.concat(chunks).toString('utf8');
+        try { resolve(JSON.parse(raw)); }
+        catch(e) { resolve({ _raw: raw }); }
+      });
+    });
+    req.on('error', reject);
+    req.setTimeout(timeoutMs, () => { req.destroy(); reject(new Error('Browserless timeout')); });
+    req.write(postData);
+    req.end();
+  });
+}
+
+async function searchYavka(imdbId, title, season, episode) {
+  try {
+    // Yavka supports direct IMDb ID URL: /tt1234567
+    // For series add episode filter in search params
+    let searchUrl = `${YAVKA_BASE}/${imdbId}`;
+    if (season && episode) {
+      const e = String(episode).padStart(2, '0');
+      searchUrl = `${YAVKA_BASE}/subtitles.php?s=${encodeURIComponent(title)}&i=${imdbId}&l=&e=${season}x${e}`;
+    }
+    console.log(`[yavka] searching: ${searchUrl}`);
+
+    const code = `
+      module.exports = async ({ page, context }) => {
+        await page.goto(context.url, { waitUntil: 'networkidle2', timeout: 30000 });
+        return { html: await page.content() };
+      };
+    `;
+    const result = await browserlessRequest(code, { url: searchUrl }, 40000);
+    const html = (result && result.html) ? result.html : '';
+    if (!html) { console.log('[yavka] empty response from browserless'); return []; }
+
+    const results = [];
+    const seen = new Set();
+    // Links are like href="/subs/3561/BG" or href="/subs/3561/BG""
+    const linkRe = /href="\/subs\/(\d+)\/BG[^"]*"/gi;
+    let m;
+    while ((m = linkRe.exec(html)) !== null) {
+      const subId = m[1];
+      if (seen.has(subId)) continue;
+      seen.add(subId);
+      // Try to get title from nearby text
+      const start = Math.max(0, m.index - 200);
+      const snippet = html.slice(start, m.index + 100);
+      const titleMatch = snippet.match(/tooltiptitle="([^"]+)"/i) || snippet.match(/>([^<]{5,60})<\/a>/i);
+      const subTitle = titleMatch ? titleMatch[1].trim() : `Yavka #${subId}`;
+      results.push({ subId, subTitle, downloadPath: `/subs/${subId}/BG/` });
+    }
+    console.log(`[yavka] parsed ${results.length} results`);
+    return results;
+  } catch(e) {
+    console.error('[yavka] search error:', e.message);
+    return [];
+  }
+}
+
+async function downloadYavka(downloadPath) {
+  try {
+    const pageUrl = YAVKA_BASE + downloadPath.replace(/\/$/, ''); // e.g. /subs/3561/BG
+    console.log(`[yavka] downloading ${pageUrl}`);
+
+    // Navigate to the sub page, find the Turnstile form, submit it, intercept the download
+    const code = `
+      module.exports = async ({ page, context }) => {
+        let fileData = null;
+        let fileType = '';
+
+        // Intercept the download response
+        await page.setRequestInterception(true);
+        page.on('request', req => req.continue());
+
+        // Navigate to the sub page
+        await page.goto(context.url, { waitUntil: 'networkidle2', timeout: 30000 });
+
+        // Find the download form — it has a hidden Turnstile input and lng field
+        // Wait for Turnstile to be solved (browserless does this automatically)
+        await page.waitForSelector('form', { timeout: 15000 }).catch(() => {});
+
+        // Submit the form by clicking the download button or submitting directly
+        const submitted = await page.evaluate(() => {
+          const forms = document.querySelectorAll('form');
+          for (const form of forms) {
+            // Look for the form that POSTs to the sub URL
+            if (form.method && form.method.toLowerCase() === 'post') {
+              // Ensure lng is set to BG
+              const lngInput = form.querySelector('input[name="lng"]');
+              if (lngInput) lngInput.value = 'BG';
+              form.submit();
+              return true;
+            }
+          }
+          // Fallback: click any download button/link
+          const btn = document.querySelector('button[type="submit"], input[type="submit"]');
+          if (btn) { btn.click(); return true; }
+          return false;
+        });
+
+        if (!submitted) return { error: 'No download form found' };
+
+        // Wait for the navigation / file response
+        await page.waitForNavigation({ waitUntil: 'networkidle2', timeout: 20000 }).catch(() => {});
+
+        // Get the response as base64 via fetch using the page's cookies (already set)
+        const result = await page.evaluate(async (postUrl) => {
+          try {
+            // Re-POST using fetch — cookies are already set from the page visit
+            const form = document.querySelector('form');
+            let body = 'lng=BG';
+            if (form) {
+              const data = new FormData(form);
+              const params = new URLSearchParams();
+              for (const [k, v] of data.entries()) params.append(k, v);
+              params.set('lng', 'BG');
+              body = params.toString();
+            }
+            const r = await fetch(postUrl, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+              body,
+              credentials: 'include',
+            });
+            const ct = r.headers.get('content-type') || '';
+            const cd = r.headers.get('content-disposition') || '';
+            const ab = await r.arrayBuffer();
+            const bytes = Array.from(new Uint8Array(ab));
+            return { bytes, ct, cd };
+          } catch(e) {
+            return { error: e.message };
+          }
+        }, context.postUrl);
+
+        return result || { error: 'No result' };
+      };
+    `;
+
+    const postUrl = YAVKA_BASE + downloadPath; // with trailing slash for POST
+    const result = await browserlessRequest(code, { url: pageUrl, postUrl }, 60000);
+
+    if (!result || result.error) {
+      console.log('[yavka] download error from browserless:', result && result.error);
+      return null;
+    }
+    if (!result.bytes || !result.bytes.length) {
+      console.log('[yavka] empty file received');
+      return null;
+    }
+
+    const buffer = Buffer.from(result.bytes);
+    console.log(`[yavka] got ${buffer.length} bytes, ct=${result.ct}, cd=${result.cd}`);
+
+    const magic4 = buffer.slice(0, 4);
+    const isZip = magic4[0] === 0x50 && magic4[1] === 0x4b;
+    const isRar = magic4[0] === 0x52 && magic4[1] === 0x61 && magic4[2] === 0x72 && magic4[3] === 0x21;
+
+    if (isRar) return await extractSrtFromRar(buffer, null, null);
+    if (isZip) {
+      const entry = extractSrtFromZip(buffer, null, null);
+      return entry ? entry.data : null;
+    }
+    const str = buffer.slice(0, 30).toString('latin1');
+    if (/^\s*\d/.test(str) || str.includes('-->')) return buffer;
+    return null;
+  } catch(e) {
+    console.error('[yavka] download error:', e.message);
+    return null;
+  }
+}
+
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
 function parseRequest(id) {
@@ -720,6 +926,10 @@ const server = http.createServer(async (req, res) => {
     res.setHeader('Content-Type', 'application/json');
     return res.end(JSON.stringify(MANIFEST_UNACS));
   }
+  if (path === '/yavka/manifest.json') {
+    res.setHeader('Content-Type', 'application/json');
+    return res.end(JSON.stringify(MANIFEST_YAVKA));
+  }
   // Legacy route
   if (path === '/manifest.json') {
     res.setHeader('Content-Type', 'application/json');
@@ -731,6 +941,14 @@ const server = http.createServer(async (req, res) => {
   if (proxyMatch) {
     const key = decodeURIComponent(proxyMatch[1]);
     let data = srtCache.get(key);
+    if (!data && key.startsWith('yavka__')) {
+      const subId = key.split('__')[1];
+      console.log(`[proxy] cache miss, re-downloading yavka: ${subId}`);
+      try {
+        const d = await downloadYavka(`/subs/${subId}/BG/`);
+        if (d) { data = toUtf8Srt(d); srtCache.set(key, data); }
+      } catch(e) { console.error('[proxy] yavka re-download failed:', e.message); }
+    }
     if (!data && key.startsWith('unacs__')) {
       const parts = key.split('__');
       const subSlug = parts[1];
@@ -842,6 +1060,46 @@ const server = http.createServer(async (req, res) => {
     return res.end(JSON.stringify({ subtitles }));
   }
 
+  // Yavka subtitles
+  const yavkaMatch = path.match(/^\/yavka\/subtitles\/(\w+)\/(.+)\.json$/);
+  if (yavkaMatch) {
+    const [, type, id] = yavkaMatch;
+    const { imdbId, season, episode } = parseRequest(id);
+    console.log(`[yavka request] ${type} ${imdbId} S${season}E${episode}`);
+
+    const titleInfo = await getTitleFromImdb(imdbId);
+    if (!titleInfo) return res.end(JSON.stringify({ subtitles: [] }));
+    const { title } = titleInfo;
+    console.log(`[title] "${title}"`);
+
+    const yavkaResults = await searchYavka(imdbId, title, season, episode).catch(e => { console.error('[yavka] search failed:', e.message); return []; });
+    console.log(`[yavka found] ${yavkaResults.length}`);
+
+    const host = req.headers.host || `localhost:${PORT}`;
+    const subtitles = [];
+    for (const s of yavkaResults.slice(0, 8)) {
+      try {
+        const key = `yavka__${s.subId}`;
+        if (!srtCache.has(key)) {
+          const data = await downloadYavka(s.downloadPath);
+          if (!data) continue;
+          srtCache.set(key, toUtf8Srt(data));
+        }
+        subtitles.push({
+          id: `yavka-${s.subId}`,
+          url: `https://${host}/proxy/${encodeURIComponent(key)}.srt`,
+          lang: 'bul',
+          name: s.subTitle,
+        });
+      } catch(e) {
+        console.error(`[yavka proxy] error for ${s.subId}:`, e.message);
+      }
+    }
+    console.log(`[yavka response] ${subtitles.length} subtitles`);
+    res.setHeader('Content-Type', 'application/json');
+    return res.end(JSON.stringify({ subtitles }));
+  }
+
   res.writeHead(404);
   res.end('Not found');
 });
@@ -853,6 +1111,7 @@ server.listen(PORT, () => {
 ╠══════════════════════════════════════════════════════╣
 ║  SAB:   https://sub-gatherer.onrender.com/sabs/manifest.json  ║
 ║  UNACS: https://sub-gatherer.onrender.com/unacs/manifest.json ║
+║  YAVKA: https://sub-gatherer.onrender.com/yavka/manifest.json ║
 ╚══════════════════════════════════════════════════════╝
 `);
 });
