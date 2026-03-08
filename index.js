@@ -791,6 +791,10 @@ async function searchYavka(imdbId, title, season, episode) {
       results.push({ subId, subTitle, rowText, downloadPath: '/subs/' + subId + '/BG/' });
     }
     console.log('[yavka] parsed', results.length, 'results');
+    if (results.length > 0) {
+      console.log('[yavka] titles:', results.map(r => r.subTitle).join(' | '));
+      console.log('[yavka] first rowText snippet:', results[0].rowText.replace(/\s+/g, ' ').slice(0, 300));
+    }
 
     // For series: filter results by episode if we have S/E info
     if (season && episode && results.length > 1) {
