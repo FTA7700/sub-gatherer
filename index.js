@@ -713,7 +713,7 @@ function browserlessRequest(code, context = {}, timeoutMs = 45000) {
   if (!BROWSERLESS_TOKEN) throw new Error('No browserless token configured');
   const fnBody = JSON.stringify({ code, context });
   return new Promise((resolve, reject) => {
-    const endpoint = `https://production-sfo.browserless.io/function?token=${BROWSERLESS_TOKEN}`;
+    const endpoint = `https://production-sfo.browserless.io/function?token=${BROWSERLESS_TOKEN}&stealth=true&solveCaptchas=true`;
     const u = new URL(endpoint);
     const postData = Buffer.from(fnBody);
     const req = https.request({
@@ -752,13 +752,16 @@ async function searchYavka(imdbId, title, season, episode) {
     console.log(`[yavka] searching: ${searchUrl}`);
 
     const code = `
-      module.exports = async ({ page, context }) => {
+      export default async ({ page, context }) => {
         await page.goto(context.url, { waitUntil: 'networkidle2', timeout: 30000 });
-        return { html: await page.content() };
+        const html = await page.content();
+        return { data: { html }, type: 'application/json' };
       };
     `;
     const result = await browserlessRequest(code, { url: searchUrl }, 40000);
-    const html = (result && result.html) ? result.html : '';
+    // v2 wraps in result.data
+    const html = (result && result.data && result.data.html) ? result.data.html
+               : (result && result.html) ? result.html : '';
     if (!html) { console.log('[yavka] empty response from browserless'); return []; }
 
     const results = [];
@@ -790,64 +793,27 @@ async function downloadYavka(downloadPath) {
     const pageUrl = YAVKA_BASE + downloadPath.replace(/\/$/, ''); // e.g. /subs/3561/BG
     console.log(`[yavka] downloading ${pageUrl}`);
 
-    // Navigate to the sub page, find the Turnstile form, submit it, intercept the download
     const code = `
-      module.exports = async ({ page, context }) => {
-        let fileData = null;
-        let fileType = '';
-
-        // Intercept the download response
-        await page.setRequestInterception(true);
-        page.on('request', req => req.continue());
-
-        // Navigate to the sub page
+      export default async ({ page, context }) => {
+        // Navigate to the sub page — Cloudflare Turnstile is auto-solved by browserless
         await page.goto(context.url, { waitUntil: 'networkidle2', timeout: 30000 });
 
-        // Find the download form — it has a hidden Turnstile input and lng field
-        // Wait for Turnstile to be solved (browserless does this automatically)
+        // Wait for the form with the Turnstile to be ready
         await page.waitForSelector('form', { timeout: 15000 }).catch(() => {});
 
-        // Submit the form by clicking the download button or submitting directly
-        const submitted = await page.evaluate(() => {
-          const forms = document.querySelectorAll('form');
-          for (const form of forms) {
-            // Look for the form that POSTs to the sub URL
-            if (form.method && form.method.toLowerCase() === 'post') {
-              // Ensure lng is set to BG
-              const lngInput = form.querySelector('input[name="lng"]');
-              if (lngInput) lngInput.value = 'BG';
-              form.submit();
-              return true;
-            }
-          }
-          // Fallback: click any download button/link
-          const btn = document.querySelector('button[type="submit"], input[type="submit"]');
-          if (btn) { btn.click(); return true; }
-          return false;
-        });
-
-        if (!submitted) return { error: 'No download form found' };
-
-        // Wait for the navigation / file response
-        await page.waitForNavigation({ waitUntil: 'networkidle2', timeout: 20000 }).catch(() => {});
-
-        // Get the response as base64 via fetch using the page's cookies (already set)
+        // Use fetch from within the page (inherits cookies + cf_clearance set by Turnstile solve)
         const result = await page.evaluate(async (postUrl) => {
           try {
-            // Re-POST using fetch — cookies are already set from the page visit
             const form = document.querySelector('form');
-            let body = 'lng=BG';
+            const params = new URLSearchParams();
             if (form) {
-              const data = new FormData(form);
-              const params = new URLSearchParams();
-              for (const [k, v] of data.entries()) params.append(k, v);
-              params.set('lng', 'BG');
-              body = params.toString();
+              for (const [k, v] of new FormData(form).entries()) params.append(k, v);
             }
+            params.set('lng', 'BG');
             const r = await fetch(postUrl, {
               method: 'POST',
               headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-              body,
+              body: params.toString(),
               credentials: 'include',
             });
             const ct = r.headers.get('content-type') || '';
@@ -860,7 +826,7 @@ async function downloadYavka(downloadPath) {
           }
         }, context.postUrl);
 
-        return result || { error: 'No result' };
+        return { data: result, type: 'application/json' };
       };
     `;
 
@@ -871,13 +837,15 @@ async function downloadYavka(downloadPath) {
       console.log('[yavka] download error from browserless:', result && result.error);
       return null;
     }
-    if (!result.bytes || !result.bytes.length) {
+    // v2 wraps response in result.data
+    const payload = result.data || result;
+    if (!payload.bytes || !payload.bytes.length) {
       console.log('[yavka] empty file received');
       return null;
     }
 
-    const buffer = Buffer.from(result.bytes);
-    console.log(`[yavka] got ${buffer.length} bytes, ct=${result.ct}, cd=${result.cd}`);
+    const buffer = Buffer.from(payload.bytes);
+    console.log(`[yavka] got ${buffer.length} bytes, ct=${payload.ct}, cd=${payload.cd}`);
 
     const magic4 = buffer.slice(0, 4);
     const isZip = magic4[0] === 0x50 && magic4[1] === 0x4b;
