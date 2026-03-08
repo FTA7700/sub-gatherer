@@ -523,6 +523,22 @@ async function searchUnacs(title, year, season, episode, imdbId = null) {
 
   console.log(`[unacs] parsed ${results.length} results`);
 
+  // 0. For series, filter by episode first using slug (most precise)
+  if (season && episode) {
+    const s = String(season).padStart(2, '0');
+    const e = String(episode).padStart(2, '0');
+    const epPatterns = [
+      new RegExp(`S${s}E${e}`, 'i'),
+      new RegExp(`${season}x${e}`, 'i'),
+      new RegExp(`_${s}x${e}[-_]`, 'i'),
+    ];
+    const epFiltered = results.filter(r => epPatterns.some(p => p.test(r.subSlug)));
+    if (epFiltered.length > 0) {
+      console.log(`[unacs] matched ${epFiltered.length} results by episode in slug`);
+      return epFiltered;
+    }
+  }
+
   // 1. Try IMDb ID match first (most reliable)
   const imdbFiltered = results.filter(r => r.rowImdbId && r.rowImdbId === imdbId);
   if (imdbFiltered.length > 0) {
