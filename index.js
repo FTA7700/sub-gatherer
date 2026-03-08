@@ -774,14 +774,17 @@ async function searchYavka(imdbId, title, season, episode) {
 
     const results = [];
     const seen = new Set();
+    // Only parse links inside the subtitles results table, not the sidebar
+    const tableMatch = html.match(/<table[^>]*class="[^"]*subtitles[^"]*"[^>]*>([\s\S]*?)<\/table>/i);
+    const searchArea = tableMatch ? tableMatch[1] : html;
     const linkRe = /href="\/subs\/(\d+)\/BG[^"]*"/gi;
     let m;
-    while ((m = linkRe.exec(html)) !== null) {
+    while ((m = linkRe.exec(searchArea)) !== null) {
       const subId = m[1];
       if (seen.has(subId)) continue;
       seen.add(subId);
       const start = Math.max(0, m.index - 200);
-      const snippet = html.slice(start, m.index + 100);
+      const snippet = searchArea.slice(start, m.index + 100);
       const titleMatch = snippet.match(/tooltiptitle="([^"]+)"/i) || snippet.match(/>([^<]{5,60})<\/a>/i);
       const subTitle = titleMatch ? titleMatch[1].trim() : ('Yavka #' + subId);
       results.push({ subId, subTitle, downloadPath: '/subs/' + subId + '/BG/' });
