@@ -737,10 +737,11 @@ function browserlessPost(urlPath, body, isJson, timeoutMs = 45000) {
 
 async function searchYavka(imdbId, title, season, episode) {
   try {
-    let searchUrl = YAVKA_BASE + '/' + imdbId;
+    // Use subtitles.php with IMDb ID for both movies and series
+    let searchUrl = YAVKA_BASE + '/subtitles.php?s=&i=' + imdbId + '&l=';
     if (season && episode) {
       const e = String(episode).padStart(2, '0');
-      searchUrl = YAVKA_BASE + '/subtitles.php?s=' + encodeURIComponent(title) + '&i=' + imdbId + '&l=&e=' + season + 'x' + e;
+      searchUrl += '&e=' + season + 'x' + e;
     }
     console.log('[yavka] searching:', searchUrl);
 
