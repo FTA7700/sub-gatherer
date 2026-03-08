@@ -478,7 +478,7 @@ function fetchPost(urlStr, body, extraHeaders = {}) {
   });
 }
 
-async function searchUnacs(title, year, season, episode) {
+async function searchUnacs(title, year, season, episode, imdbId = null) {
   let query = title;
   if (season && episode) {
     const s = String(season).padStart(2, '0');
@@ -527,11 +527,39 @@ async function searchUnacs(title, year, season, episode) {
 
   console.log(`[unacs] parsed ${results.length} results`);
 
-  if (year && results.some(r => r.rowYear === year)) {
-    return results.filter(r => r.rowYear === year);
+  // 1. Try IMDb ID match first (most reliable)
+  const imdbFiltered = results.filter(r => r.rowImdbId && r.rowImdbId === imdbId);
+  if (imdbFiltered.length > 0) {
+    console.log(`[unacs] matched ${imdbFiltered.length} results by IMDb ID`);
+    return imdbFiltered;
   }
 
-  return results;
+  // 2. Fall back to exact title + year
+  function normalize(s) { return s.toLowerCase().replace(/[^a-z0-9\u0400-\u04ff]/g, ' ').replace(/\s+/g, ' ').trim(); }
+  const normTitle = normalize(title);
+  const exactFiltered = results.filter(r => normalize(r.subTitle) === normTitle);
+  if (exactFiltered.length > 0 && year) {
+    const yearMatch2 = exactFiltered.filter(r => r.rowYear === year);
+    if (yearMatch2.length > 0) {
+      console.log(`[unacs] matched ${yearMatch2.length} results by exact title+year`);
+      return yearMatch2;
+    }
+    console.log(`[unacs] matched ${exactFiltered.length} results by exact title`);
+    return exactFiltered;
+  }
+
+  // 3. Fall back to title contains all search words + year
+  const searchWords = normTitle.split(' ').filter(w => w.length > 1);
+  const looseFiltered = results.filter(r => {
+    const rt = normalize(r.subTitle);
+    const resultWords = rt.split(' ').filter(w => w.length > 1);
+    return searchWords.every(w => rt.includes(w)) && resultWords.length <= searchWords.length + 2;
+  });
+  const base = looseFiltered.length > 0 ? looseFiltered : results;
+  if (year && base.some(r => r.rowYear === year)) {
+    return base.filter(r => r.rowYear === year);
+  }
+  return base;
 }
 
 async function downloadUnacs(subSlug, season, episode) {
@@ -743,7 +771,7 @@ const server = http.createServer(async (req, res) => {
     const { title, year } = titleInfo;
     console.log(`[title] "${title}" (${year})`);
 
-    const unacsResults = await searchUnacs(title, year, season, episode).catch(e => { console.error('[unacs] search failed:', e.message); return []; });
+    const unacsResults = await searchUnacs(title, year, season, episode, imdbId).catch(e => { console.error('[unacs] search failed:', e.message); return []; });
     console.log(`[unacs found] ${unacsResults.length}`);
 
     const host = req.headers.host || `localhost:${PORT}`;
