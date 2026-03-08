@@ -746,7 +746,7 @@ async function searchYavka(imdbId, title, season, episode) {
     console.log('[yavka] searching:', searchUrl);
 
     // POST search form via BQL (stealth handles Cloudflare)
-    const postBody = 's=' + encodeURIComponent(title) + '&i=' + imdbId + '&l=BG&y=&u=&genre=';
+    const postBody = 'sea=' + encodeURIComponent(title) + '&i=' + imdbId + '&l=BG&y=&c=&u=&g=&cf-turnstile-response=&search=%EF%80%82+%D0%A2%D1%8A%D1%80%D1%81%D0%B5%D0%BD%D0%B5';
     const bql = {
       query: `mutation SearchYavka {
         goto(url: "https://yavka.net/search", waitUntil: networkIdle) { status }
