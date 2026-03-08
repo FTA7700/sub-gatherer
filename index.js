@@ -479,12 +479,8 @@ function fetchPost(urlStr, body, extraHeaders = {}) {
 }
 
 async function searchUnacs(title, year, season, episode, imdbId = null) {
-  let query = title;
-  if (season && episode) {
-    const s = String(season).padStart(2, '0');
-    const e = String(episode).padStart(2, '0');
-    query = `${title} S${s}E${e}`;
-  }
+  // Always search by title only — unacs indexes by series/movie title, not episode
+  const query = title;
 
   const body = `m=${encodeURIComponent(query)}&l=0&t=Submit&action=+%D2%FA%F0%F1%E8+`;
   console.log(`[unacs] searching: "${query}"`);
