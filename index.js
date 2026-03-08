@@ -759,24 +759,15 @@ async function searchYavka(imdbId, title, season, episode) {
     }
     console.log('[yavka] searching:', searchUrl);
 
-    // POST search form via BQL (stealth handles Cloudflare)
-    const postBody = 'sea=' + encodeURIComponent(title) + '&i=' + imdbId + '&l=BG&y=&c=&u=&g=&cf-turnstile-response=&search=%EF%80%82+%D0%A2%D1%8A%D1%80%D1%81%D0%B5%D0%BD%D0%B5';
-    const bql = {
-      query: `mutation SearchYavka {
-        goto(url: "https://yavka.net/search", waitUntil: networkIdle) { status }
-        evaluate(content: """
-          (async () => {
-            const r = await fetch('https://yavka.net/search', {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-              body: '${postBody}',
-              credentials: 'include'
-            });
-            return await r.text();
-          })()
-        """) { value }
-      }`
-    };
+    // For series: use subtitles.php URL directly (has episode filter &e=NxNN built in)
+    // For movies: use POST search form
+    let bql;
+    if (season && episode) {
+      bql = { query: `mutation SearchYavka {\n        goto(url: "${searchUrl}", waitUntil: networkIdle) { status }\n        evaluate(content: """\n          (() => document.documentElement.outerHTML)()\n        """) { value }\n      }` };
+    } else {
+      const postBody = 'sea=' + encodeURIComponent(title) + '&i=' + imdbId + '&l=BG&y=&c=&u=&g=&cf-turnstile-response=&search=%EF%80%82+%D0%A2%D1%8A%D1%80%D1%81%D0%B5%D0%BD%D0%B5';
+      bql = { query: `mutation SearchYavka {\n        goto(url: "https://yavka.net/search", waitUntil: networkIdle) { status }\n        evaluate(content: """\n          (async () => {\n            const r = await fetch('https://yavka.net/search', {\n              method: 'POST',\n              headers: { 'Content-Type': 'application/x-www-form-urlencoded' },\n              body: '${postBody}',\n              credentials: 'include'\n            });\n            return await r.text();\n          })()\n        """) { value }\n      }` };
+    }
     const { status, text } = await browserlessPost('/stealth/bql', bql, true, 40000);
     console.log('[yavka] BQL search status:', status, 'response len:', text.length);
     if (status !== 200) { console.log('[yavka] BQL search failed:', text.slice(0, 300)); return []; }
