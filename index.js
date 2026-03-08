@@ -753,12 +753,14 @@ async function searchYavka(imdbId, title, season, episode) {
       }`
     };
     const { status, text } = await browserlessPost('/stealth/bql', bql, true, 40000);
-    if (status !== 200) { console.log('[yavka] BQL search failed, status:', status, text.slice(0, 200)); return []; }
+    console.log('[yavka] BQL search status:', status, 'response len:', text.length);
+    if (status !== 200) { console.log('[yavka] BQL search failed:', text.slice(0, 300)); return []; }
+    console.log('[yavka] BQL raw (500):', text.slice(0, 500));
     let bqlResult;
-    try { bqlResult = JSON.parse(text); } catch(e) { console.log('[yavka] BQL parse error'); return []; }
+    try { bqlResult = JSON.parse(text); } catch(e) { console.log('[yavka] BQL parse error:', text.slice(0, 200)); return []; }
     const html = bqlResult && bqlResult.data && bqlResult.data.html && bqlResult.data.html.html || '';
-    console.log('[yavka] html length:', html.length, 'snippet:', html.slice(0, 150).replace(/\s+/g, ' '));
-    if (!html) { console.log('[yavka] empty html from BQL'); return []; }
+    console.log('[yavka] html length:', html.length, html ? 'snippet: ' + html.slice(0, 150).replace(/\s+/g, ' ') : '(empty)');
+    if (!html) { console.log('[yavka] empty html from BQL, full result:', JSON.stringify(bqlResult).slice(0, 400)); return []; }
 
     const results = [];
     const seen = new Set();
