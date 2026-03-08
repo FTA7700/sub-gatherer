@@ -105,7 +105,7 @@ function toUtf8Srt(buf) {
 
 // ─── Search subs.sab.bz ───────────────────────────────────────────────────────
 
-async function searchSubtitles(imdbId, title, season, episode) {
+async function searchSubtitles(imdbId, title, year, season, episode) {
   const queries = buildQueries(title, season, episode);
   const seen = new Set();
   const results = [];
@@ -167,21 +167,30 @@ async function searchSubtitles(imdbId, title, season, episode) {
     return results.filter(r => r.rowImdb === imdbId);
   }
 
+  // Fallback: filter by year if available (handles cases where IMDb ID not in row)
+  if (year && results.length > 0) {
+    const byYear = results.filter(r => r.subTitle && r.subTitle.includes(String(year)));
+    if (byYear.length > 0) return byYear;
+  }
+
   return results;
 }
 
 function buildQueries(title, season, episode) {
+  // Build a simplified title — strip ": Part X", ": Chapter X", etc.
+  const simplified = title.replace(/\s*:\s*(part|chapter|volume|vol\.?)\s+\w+/i, '').trim();
+  const titles = simplified !== title ? [title, simplified] : [title];
+
   if (season && episode) {
     const s = String(season).padStart(2, '0');
     const e = String(episode).padStart(2, '0');
-    // Try both S02E01 and 02x01 formats, plus season pack
-    return [
-      `${title} ${s}x${e}`,
-      `${title} S${s}E${e}`,
-      `${title} Season ${season}`,
-    ];
+    const queries = [];
+    for (const t of titles) {
+      queries.push(`${t} ${s}x${e}`, `${t} S${s}E${e}`, `${t} Season ${season}`);
+    }
+    return [...new Set(queries)];
   }
-  return [title];
+  return [...new Set(titles)];
 }
 
 // ─── ZIP extraction ───────────────────────────────────────────────────────────
@@ -509,106 +518,110 @@ function fetchPost(urlStr, body, extraHeaders = {}) {
   });
 }
 
-async function searchUnacs(title, year, season, episode, imdbId = null) {
-  // For series, search with episode notation to get the right page results
-  let query = title;
+function filterUnacsResults(results, title, year, imdbId, season, episode) {
+  // Priority 1: IMDb ID match
+  if (imdbId) {
+    const byImdb = results.filter(r => r.rowImdbId === imdbId);
+    if (byImdb.length > 0) return byImdb;
+  }
+
+  // Priority 2: Episode in slug for series
   if (season && episode) {
-    const s = String(season).padStart(2, '0');
     const e = String(episode).padStart(2, '0');
-    query = `${title} ${season}x${e}`;
+    const epPat = new RegExp(season + 'x' + e, 'i');
+    const byEp = results.filter(r => epPat.test(r.subSlug));
+    if (byEp.length > 0) return byEp;
   }
 
-  const body = `m=${encodeURIComponent(query)}&l=0&t=Submit&action=+%D2%FA%F0%F1%E8+`;
-  console.log(`[unacs] searching: "${query}"`);
+  // Priority 3: Title + year match
+  const norm = s => s.toLowerCase().replace(/[^a-z0-9]/g, '');
+  const normTitle = norm(title);
+  const byTitle = results.filter(r => norm(r.subTitle).includes(normTitle));
+  const base = byTitle.length > 0 ? byTitle : results;
 
-  let html;
-  try {
-    const { buffer } = await fetchPost(`${UNACS_BASE}/search.php`, body, { 'Referer': `${UNACS_BASE}/index.php` });
-    html = decodeWindows1251(buffer);
-  } catch (e) {
-    console.error('[unacs] search error:', e.message);
-    return [];
-  }
-
-  const results = [];
-  const seen = new Set();
-
-  const rowRe = /<tr[^>]*>([\s\S]*?)<\/tr>/gi;
-  let rowMatch;
-  while ((rowMatch = rowRe.exec(html)) !== null) {
-    const row = rowMatch[1];
-
-    const linkMatch = row.match(/href="\/subtitles\/([^/]+)-(\d+)\/"/i);
-    if (!linkMatch) continue;
-
-    const subId = linkMatch[2];
-    if (seen.has(subId)) continue;
-    seen.add(subId);
-
-    const subSlug = linkMatch[1] + '-' + subId;
-    const yearMatch = row.match(/\((\d{4})\)/);
-    const rowYear = yearMatch ? parseInt(yearMatch[1]) : null;
-    const titleMatch = row.match(/href="\/subtitles\/[^"]+">([^<]+)<\/a>/i);
-    const subTitle = titleMatch ? titleMatch[1].trim() : subSlug;
-    const lang = /english|английски/i.test(row) ? 'eng' : 'bul';
-
-    results.push({ subId, subSlug, subTitle, rowYear, lang,
-      downloadUrl: `${UNACS_BASE}/subtitles/${subSlug}/`,
-    });
-  }
-
-  console.log(`[unacs] parsed ${results.length} results`);
-
-  // 0. For series, filter by episode first using slug (most precise)
-  if (season && episode) {
-    const s = String(season).padStart(2, '0');
-    const e = String(episode).padStart(2, '0');
-    const epPatterns = [
-      new RegExp(`S${s}E${e}`, 'i'),
-      new RegExp(`${season}x${e}`, 'i'),
-      new RegExp(`_${s}x${e}[-_]`, 'i'),
-    ];
-    const epFiltered = results.filter(r => epPatterns.some(p => p.test(r.subSlug)));
-    if (epFiltered.length > 0) {
-      console.log(`[unacs] matched ${epFiltered.length} results by episode in slug`);
-      return epFiltered;
-    }
-  }
-
-  // 1. Try IMDb ID match first (most reliable)
-  const imdbFiltered = results.filter(r => r.rowImdbId && r.rowImdbId === imdbId);
-  if (imdbFiltered.length > 0) {
-    console.log(`[unacs] matched ${imdbFiltered.length} results by IMDb ID`);
-    return imdbFiltered;
-  }
-
-  // 2. Fall back to exact title + year
-  function normalize(s) { return s.toLowerCase().replace(/[^a-z0-9\u0400-\u04ff]/g, ' ').replace(/\s+/g, ' ').trim(); }
-  const normTitle = normalize(title);
-  const exactFiltered = results.filter(r => normalize(r.subTitle) === normTitle);
-  if (exactFiltered.length > 0 && year) {
-    const yearMatch2 = exactFiltered.filter(r => r.rowYear === year);
-    if (yearMatch2.length > 0) {
-      console.log(`[unacs] matched ${yearMatch2.length} results by exact title+year`);
-      return yearMatch2;
-    }
-    console.log(`[unacs] matched ${exactFiltered.length} results by exact title`);
-    return exactFiltered;
-  }
-
-  // 3. Fall back to title contains all search words + year
-  const searchWords = normTitle.split(' ').filter(w => w.length > 1);
-  const looseFiltered = results.filter(r => {
-    const rt = normalize(r.subTitle);
-    const resultWords = rt.split(' ').filter(w => w.length > 1);
-    return searchWords.every(w => rt.includes(w)) && resultWords.length <= searchWords.length + 2;
-  });
-  const base = looseFiltered.length > 0 ? looseFiltered : results;
-  if (year && base.some(r => r.rowYear === year)) {
-    return base.filter(r => r.rowYear === year);
+  if (year) {
+    const byYear = base.filter(r => r.rowYear === year);
+    if (byYear.length > 0) return byYear;
   }
   return base;
 }
+
+async function searchUnacs(title, year, season, episode, imdbId = null) {
+  const simplified = title.replace(/\s*:\s*(part|chapter|volume|vol\.?)\s+\w+/i, '').trim();
+  const titlesToTry = (simplified !== title) ? [title, simplified] : [title];
+
+  for (const searchTitle of titlesToTry) {
+    let query = searchTitle;
+    if (season && episode) {
+      const e = String(episode).padStart(2, '0');
+      query = searchTitle + ' ' + season + 'x' + e;
+    }
+
+    const yearParam = year ? String(year) : '0';
+    const body = 'm=' + encodeURIComponent(query) + '&l=0&y=' + yearParam + '&t=Submit&action=+%D2%FA%F0%F1%E8+';
+    console.log('[unacs] searching: "' + query + '"');
+
+    let html;
+    try {
+      const { buffer } = await fetchPost(UNACS_BASE + '/search.php', body, { 'Referer': UNACS_BASE + '/index.php' });
+      html = decodeWindows1251(buffer);
+    } catch (e) {
+      console.error('[unacs] search error:', e.message);
+      continue;
+    }
+
+    const results = [];
+    const seen = new Set();
+
+    const rowRe = /<tr[^>]*>([\s\S]*?)<\/tr>/gi;
+    let rowMatch;
+    while ((rowMatch = rowRe.exec(html)) !== null) {
+      const row = rowMatch[1];
+
+      const linkMatch = row.match(/href="\/subtitles\/([^/]+)-(\d+)\/"/i);
+      if (!linkMatch) continue;
+
+      const subSlug = linkMatch[1];
+      const subId = linkMatch[2];
+      if (seen.has(subId)) continue;
+      seen.add(subId);
+
+      const titleMatch = row.match(/href="\/subtitles\/[^"]+">([^<]+)<\/a>/i);
+      const subTitle = titleMatch ? titleMatch[1].trim() : subSlug;
+
+      // Language detection
+      let lang = 'bul';
+      if (/english|англ/i.test(row)) lang = 'eng';
+
+      // IMDb ID extraction from image path
+      const imdbMatch = row.match(/\/ii\/big\/(\d+)\.jpg/i);
+      const rowImdbId = imdbMatch ? 'tt' + imdbMatch[1].replace(/^0+/, '').padStart(7, '0') : null;
+
+      // Year extraction
+      const yearMatch = subTitle.match(/(19|20)\d{2}/);
+      const rowYear = yearMatch ? parseInt(yearMatch[0]) : null;
+
+      results.push({ subId, subSlug, subTitle, lang, rowImdbId, rowYear });
+    }
+
+    console.log('[unacs] parsed ' + results.length + ' results');
+    if (results.length === 0) continue;
+
+    // Filter by IMDb ID, exact title, or loose match
+    const filtered = filterUnacsResults(results, title, year, imdbId, season, episode);
+    if (filtered.length > 0) return filtered;
+
+    // Try simplified title filter too
+    if (simplified !== title) {
+      const filteredSimple = filterUnacsResults(results, simplified, year, imdbId, season, episode);
+      if (filteredSimple.length > 0) return filteredSimple;
+    }
+
+    if (results.length > 0) return results.slice(0, 8);
+  }
+  return [];
+}
+
 
 async function downloadUnacs(subSlug, season, episode) {
   const url = `${UNACS_BASE}/subtitles/${subSlug}/`;
@@ -955,7 +968,7 @@ const server = http.createServer(async (req, res) => {
     const { title, year } = titleInfo;
     console.log(`[title] "${title}" (${year})`);
 
-    const sabsResults = await searchSubtitles(imdbId, title, season, episode).catch(e => { console.error('[sabs] search failed:', e.message); return []; });
+    const sabsResults = await searchSubtitles(imdbId, title, year, season, episode).catch(e => { console.error('[sabs] search failed:', e.message); return []; });
     console.log(`[sabs found] ${sabsResults.length}`);
 
     const host = req.headers.host || `localhost:${PORT}`;
