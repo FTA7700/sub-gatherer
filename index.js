@@ -581,8 +581,9 @@ async function searchUnacs(title, year, season, episode, imdbId = null) {
       const linkMatch = row.match(/href="\/subtitles\/([^/]+)-(\d+)\/"/i);
       if (!linkMatch) continue;
 
-      const subSlug = linkMatch[1];
+      const subSlugText = linkMatch[1];
       const subId = linkMatch[2];
+      const subSlug = subSlugText + '-' + subId;
       if (seen.has(subId)) continue;
       seen.add(subId);
 
