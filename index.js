@@ -199,6 +199,24 @@ function extractSrtFromZip(zipBuf, season, episode) {
   return srts[0];
 }
 
+function extractAllSrtsFromZip(zipBuf, season, episode) {
+  const entries = parseZip(zipBuf);
+  const srts = entries.filter(e => /\.(srt|sub)$/i.test(e.name));
+  if (srts.length === 0) return [];
+  if (!season || !episode) return srts;
+
+  const s = String(season).padStart(2, '0');
+  const e = String(episode).padStart(2, '0');
+  const patterns = [
+    new RegExp(`S${s}E${e}`, 'i'),
+    new RegExp(`${season}x${e}`, 'i'),
+    new RegExp(`\\.${e}\\.`, 'i'),
+  ];
+
+  const matched = srts.filter(f => patterns.some(p => p.test(f.name)));
+  return matched.length > 0 ? matched : srts;
+}
+
 function parseZip(buf) {
   const entries = [];
   let eocd = -1;
@@ -627,9 +645,11 @@ async function downloadUnacs(subSlug, season, episode) {
 
 const srtCache = new Map();
 
-async function buildSrtProxy(attachId, season, episode) {
-  const key = `${attachId}-${season}-${episode}`;
-  if (srtCache.has(key)) return key;
+async function buildSrtProxies(attachId, season, episode) {
+  const baseKey = `${attachId}-${season}-${episode}`;
+  // Check if already cached
+  const cachedKeys = [...srtCache.keys()].filter(k => k === baseKey || k.startsWith(baseKey + '-i'));
+  if (cachedKeys.length > 0) return cachedKeys;
 
   const downloadUrl = `${BASE_URL}/index.php?act=download&attach_id=${attachId}`;
   console.log(`[proxy] downloading ${downloadUrl}`);
@@ -645,34 +665,30 @@ async function buildSrtProxy(attachId, season, episode) {
   const isRar = cd.includes('.rar') || ct.includes('rar');
   console.log(`[proxy] content-type: ${ct}, content-disposition: ${cd}, isZip: ${isZip}, isRar: ${isRar}`);
 
+  const keys = [];
   if (isZip) {
-    const entry = extractSrtFromZip(buffer, season, episode);
-    if (entry) {
-      console.log(`[proxy] extracted srt: ${entry.name}`);
-      srtCache.set(key, toUtf8Srt(entry.data));
-      return key;
+    const entries = extractAllSrtsFromZip(buffer, season, episode);
+    for (let i = 0; i < entries.length; i++) {
+      const key = entries.length === 1 ? baseKey : `${baseKey}-i${i}`;
+      console.log(`[proxy] extracted srt: ${entries[i].name}`);
+      srtCache.set(key, toUtf8Srt(entries[i].data));
+      keys.push(key);
     }
-    const entries = parseZip(buffer).filter(e => e.name.toLowerCase().endsWith('.srt'));
-    if (entries.length) {
-      srtCache.set(key, toUtf8Srt(entries[0].data));
-      return key;
-    }
-    return null;
   } else if (isRar) {
     try {
       const srtData = await extractSrtFromRar(buffer, season, episode);
       if (srtData) {
-        srtCache.set(key, toUtf8Srt(srtData));
-        return key;
+        srtCache.set(baseKey, toUtf8Srt(srtData));
+        keys.push(baseKey);
       }
     } catch (e) {
       console.error(`[proxy] rar extraction error: ${e.message}`);
     }
-    return null;
   } else {
-    srtCache.set(key, toUtf8Srt(buffer));
-    return key;
+    srtCache.set(baseKey, toUtf8Srt(buffer));
+    keys.push(baseKey);
   }
+  return keys;
 }
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
@@ -758,15 +774,19 @@ const server = http.createServer(async (req, res) => {
     const host = req.headers.host || `localhost:${PORT}`;
     const subtitles = [];
     for (const s of sabsResults.slice(0, 8)) {
+      if (subtitles.length >= 10) break;
       try {
-        const key = await buildSrtProxy(s.attachId, season, episode);
-        if (!key) continue;
-        subtitles.push({
-          id: `sabsub-${s.attachId}`,
-          url: `https://${host}/proxy/${encodeURIComponent(key)}.srt`,
-          lang: s.lang,
-          name: `${s.title}${s.fps ? ` • ${s.fps}fps` : ''}`,
-        });
+        const keys = await buildSrtProxies(s.attachId, season, episode);
+        for (let i = 0; i < keys.length; i++) {
+          const srtName = s.title + (s.fps ? ` • ${s.fps}fps` : '') + (keys.length > 1 ? ` [${i+1}]` : '');
+          subtitles.push({
+            id: `sabsub-${s.attachId}-${i}`,
+            url: `https://${host}/proxy/${encodeURIComponent(keys[i])}.srt`,
+            lang: s.lang,
+            name: srtName,
+          });
+          if (subtitles.length >= 10) break;
+        }
       } catch (e) {
         console.error(`[sabs proxy] error for ${s.attachId}:`, e.message);
       }
