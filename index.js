@@ -706,32 +706,26 @@ async function buildSrtProxies(attachId, season, episode) {
 
 // ─── Yavka.net via Browserless ───────────────────────────────────────────────
 
-// Uses browserless.io /function endpoint (Puppeteer) to handle Cloudflare Turnstile
-// API: https://production-sfo.browserless.io
-
-function browserlessRequest(code, context = {}, timeoutMs = 45000) {
+function browserlessPost(urlPath, body, isJson, timeoutMs = 45000) {
   if (!BROWSERLESS_TOKEN) throw new Error('No browserless token configured');
-  const fnBody = JSON.stringify({ code, context, stealth: true, solveCaptchas: true });
+  const postData = Buffer.from(isJson ? JSON.stringify(body) : body);
   return new Promise((resolve, reject) => {
-    const endpoint = `https://production-sfo.browserless.io/function?token=${BROWSERLESS_TOKEN}`;
-    const u = new URL(endpoint);
-    const postData = Buffer.from(fnBody);
+    const u = new URL('https://production-sfo.browserless.io' + urlPath + '?token=' + BROWSERLESS_TOKEN);
     const req = https.request({
       hostname: u.hostname, port: 443,
       path: u.pathname + u.search,
       method: 'POST',
       headers: {
-        'Content-Type': 'application/json',
+        'Content-Type': isJson ? 'application/json' : 'application/javascript',
         'Content-Length': postData.length,
       },
     }, (res) => {
       const chunks = [];
-      console.log('[browserless] HTTP status:', res.statusCode);
+      console.log('[browserless]', urlPath, 'HTTP status:', res.statusCode);
       res.on('data', c => chunks.push(c));
       res.on('end', () => {
-        const raw = Buffer.concat(chunks).toString('utf8');
-        try { resolve(JSON.parse(raw)); }
-        catch(e) { resolve({ _raw: raw }); }
+        const raw = Buffer.concat(chunks);
+        resolve({ status: res.statusCode, raw, text: raw.toString('utf8') });
       });
     });
     req.on('error', reject);
@@ -743,47 +737,32 @@ function browserlessRequest(code, context = {}, timeoutMs = 45000) {
 
 async function searchYavka(imdbId, title, season, episode) {
   try {
-    // Yavka supports direct IMDb ID URL: /tt1234567
-    // For series add episode filter in search params
-    let searchUrl = `${YAVKA_BASE}/${imdbId}`;
+    let searchUrl = YAVKA_BASE + '/' + imdbId;
     if (season && episode) {
       const e = String(episode).padStart(2, '0');
-      searchUrl = `${YAVKA_BASE}/subtitles.php?s=${encodeURIComponent(title)}&i=${imdbId}&l=&e=${season}x${e}`;
+      searchUrl = YAVKA_BASE + '/subtitles.php?s=' + encodeURIComponent(title) + '&i=' + imdbId + '&l=&e=' + season + 'x' + e;
     }
-    console.log(`[yavka] searching: ${searchUrl}`);
+    console.log('[yavka] searching:', searchUrl);
 
-    const code = `
-      export default async ({ page, context }) => {
-        await page.goto(context.url, { waitUntil: 'networkidle2', timeout: 30000 });
-        const html = await page.content();
-        return { data: { html }, type: 'application/json' };
-      };
-    `;
-    const result = await browserlessRequest(code, { url: searchUrl }, 40000);
-    console.log('[yavka] browserless raw result keys:', result ? Object.keys(result) : 'null');
-    if (result && result._raw) console.log('[yavka] raw response (500):', result._raw.slice(0, 500));
-    // v2 wraps in result.data
-    const html = (result && result.data && result.data.html) ? result.data.html
-               : (result && result.html) ? result.html : '';
-    if (!html) { console.log('[yavka] empty response from browserless'); return []; }
+    // /content endpoint — simple page fetch, no captcha needed for search results page
+    const { status, text: html } = await browserlessPost('/content', { url: searchUrl }, true, 30000);
+    if (status !== 200 || !html) { console.log('[yavka] content fetch failed, status:', status); return []; }
 
     const results = [];
     const seen = new Set();
-    // Links are like href="/subs/3561/BG" or href="/subs/3561/BG""
     const linkRe = /href="\/subs\/(\d+)\/BG[^"]*"/gi;
     let m;
     while ((m = linkRe.exec(html)) !== null) {
       const subId = m[1];
       if (seen.has(subId)) continue;
       seen.add(subId);
-      // Try to get title from nearby text
       const start = Math.max(0, m.index - 200);
       const snippet = html.slice(start, m.index + 100);
       const titleMatch = snippet.match(/tooltiptitle="([^"]+)"/i) || snippet.match(/>([^<]{5,60})<\/a>/i);
-      const subTitle = titleMatch ? titleMatch[1].trim() : `Yavka #${subId}`;
-      results.push({ subId, subTitle, downloadPath: `/subs/${subId}/BG/` });
+      const subTitle = titleMatch ? titleMatch[1].trim() : ('Yavka #' + subId);
+      results.push({ subId, subTitle, downloadPath: '/subs/' + subId + '/BG/' });
     }
-    console.log(`[yavka] parsed ${results.length} results`);
+    console.log('[yavka] parsed', results.length, 'results');
     return results;
   } catch(e) {
     console.error('[yavka] search error:', e.message);
@@ -793,62 +772,54 @@ async function searchYavka(imdbId, title, season, episode) {
 
 async function downloadYavka(downloadPath) {
   try {
-    const pageUrl = YAVKA_BASE + downloadPath.replace(/\/$/, ''); // e.g. /subs/3561/BG
-    console.log(`[yavka] downloading ${pageUrl}`);
+    const pageUrl = YAVKA_BASE + downloadPath.replace(/\/$/, '');
+    const postUrl = YAVKA_BASE + downloadPath;
+    console.log('[yavka] downloading via BrowserQL:', pageUrl);
 
-    const code = `
-      export default async ({ page, context }) => {
-        // Navigate to the sub page — Cloudflare Turnstile is auto-solved by browserless
-        await page.goto(context.url, { waitUntil: 'networkidle2', timeout: 30000 });
-
-        // Wait for the form with the Turnstile to be ready
-        await page.waitForSelector('form', { timeout: 15000 }).catch(() => {});
-
-        // Use fetch from within the page (inherits cookies + cf_clearance set by Turnstile solve)
-        const result = await page.evaluate(async (postUrl) => {
-          try {
+    // BrowserQL: navigate with stealth, solve Cloudflare Turnstile, fetch the file
+    const bql = {
+      query: `mutation DownloadSub {
+        goto(url: "${pageUrl}", waitUntil: networkIdle) { status }
+        evaluate(content: """
+          (async () => {
             const form = document.querySelector('form');
             const params = new URLSearchParams();
             if (form) {
               for (const [k, v] of new FormData(form).entries()) params.append(k, v);
             }
             params.set('lng', 'BG');
-            const r = await fetch(postUrl, {
+            const r = await fetch('${postUrl}', {
               method: 'POST',
               headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
               body: params.toString(),
-              credentials: 'include',
+              credentials: 'include'
             });
-            const ct = r.headers.get('content-type') || '';
-            const cd = r.headers.get('content-disposition') || '';
             const ab = await r.arrayBuffer();
             const bytes = Array.from(new Uint8Array(ab));
-            return { bytes, ct, cd };
-          } catch(e) {
-            return { error: e.message };
-          }
-        }, context.postUrl);
+            const ct = r.headers.get('content-type') || '';
+            const cd = r.headers.get('content-disposition') || '';
+            return JSON.stringify({ bytes, ct, cd });
+          })()
+        """) { value }
+      }`
+    };
 
-        return { data: result, type: 'application/json' };
-      };
-    `;
+    const { status, text } = await browserlessPost('/stealth/bql', bql, true, 60000);
+    if (status !== 200) { console.log('[yavka] BQL failed, status:', status, text.slice(0, 300)); return null; }
 
-    const postUrl = YAVKA_BASE + downloadPath; // with trailing slash for POST
-    const result = await browserlessRequest(code, { url: pageUrl, postUrl }, 60000);
+    let bqlResult;
+    try { bqlResult = JSON.parse(text); } catch(e) { console.log('[yavka] BQL parse error:', text.slice(0, 300)); return null; }
 
-    if (!result || result.error) {
-      console.log('[yavka] download error from browserless:', result && result.error);
-      return null;
-    }
-    // v2 wraps response in result.data
-    const payload = result.data || result;
-    if (!payload.bytes || !payload.bytes.length) {
-      console.log('[yavka] empty file received');
-      return null;
-    }
+    const evalValue = bqlResult && bqlResult.data && bqlResult.data.evaluate && bqlResult.data.evaluate.value;
+    if (!evalValue) { console.log('[yavka] BQL no evaluate value:', text.slice(0, 500)); return null; }
+
+    let payload;
+    try { payload = JSON.parse(evalValue); } catch(e) { console.log('[yavka] payload parse error:', String(evalValue).slice(0, 200)); return null; }
+
+    if (!payload.bytes || !payload.bytes.length) { console.log('[yavka] empty bytes'); return null; }
 
     const buffer = Buffer.from(payload.bytes);
-    console.log(`[yavka] got ${buffer.length} bytes, ct=${payload.ct}, cd=${payload.cd}`);
+    console.log('[yavka] got', buffer.length, 'bytes, ct=' + payload.ct);
 
     const magic4 = buffer.slice(0, 4);
     const isZip = magic4[0] === 0x50 && magic4[1] === 0x4b;
