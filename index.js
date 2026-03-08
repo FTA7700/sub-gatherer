@@ -711,9 +711,9 @@ async function buildSrtProxies(attachId, season, episode) {
 
 function browserlessRequest(code, context = {}, timeoutMs = 45000) {
   if (!BROWSERLESS_TOKEN) throw new Error('No browserless token configured');
-  const fnBody = JSON.stringify({ code, context });
+  const fnBody = JSON.stringify({ code, context, stealth: true, solveCaptchas: true });
   return new Promise((resolve, reject) => {
-    const endpoint = `https://production-sfo.browserless.io/function?token=${BROWSERLESS_TOKEN}&stealth=true&solveCaptchas=true`;
+    const endpoint = `https://production-sfo.browserless.io/function?token=${BROWSERLESS_TOKEN}`;
     const u = new URL(endpoint);
     const postData = Buffer.from(fnBody);
     const req = https.request({
