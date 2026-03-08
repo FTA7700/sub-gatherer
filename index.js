@@ -744,10 +744,20 @@ async function searchYavka(imdbId, title, season, episode) {
     }
     console.log('[yavka] searching:', searchUrl);
 
-    // /content endpoint — simple page fetch, no captcha needed for search results page
-    const { status, text: html } = await browserlessPost('/content', { url: searchUrl }, true, 30000);
-    if (status !== 200 || !html) { console.log('[yavka] content fetch failed, status:', status); return []; }
-    console.log('[yavka] html length:', html.length, 'snippet:', html.slice(0, 200).replace(/\s+/g, ' '));
+    // Use BQL goto (stealth) to get past Cloudflare on search page
+    const bql = {
+      query: `mutation SearchYavka {
+        goto(url: "${searchUrl}", waitUntil: networkIdle) { status }
+        html { html }
+      }`
+    };
+    const { status, text } = await browserlessPost('/stealth/bql', bql, true, 40000);
+    if (status !== 200) { console.log('[yavka] BQL search failed, status:', status, text.slice(0, 200)); return []; }
+    let bqlResult;
+    try { bqlResult = JSON.parse(text); } catch(e) { console.log('[yavka] BQL parse error'); return []; }
+    const html = bqlResult && bqlResult.data && bqlResult.data.html && bqlResult.data.html.html || '';
+    console.log('[yavka] html length:', html.length, 'snippet:', html.slice(0, 150).replace(/\s+/g, ' '));
+    if (!html) { console.log('[yavka] empty html from BQL'); return []; }
 
     const results = [];
     const seen = new Set();
