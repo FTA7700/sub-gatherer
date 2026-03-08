@@ -817,7 +817,7 @@ async function searchYavka(imdbId, title, season, episode) {
   }
 }
 
-async function downloadYavka(downloadPath) {
+async function downloadYavkaRaw(downloadPath) {
   try {
     const pageUrl = YAVKA_BASE + downloadPath.replace(/\/$/, '');
     const postUrl = YAVKA_BASE + downloadPath;
@@ -867,26 +867,49 @@ async function downloadYavka(downloadPath) {
 
     const buffer = Buffer.from(payload.bytes);
     console.log('[yavka] got', buffer.length, 'bytes, ct=' + payload.ct);
-
-    const magic4 = buffer.slice(0, 4);
-    const isZip = magic4[0] === 0x50 && magic4[1] === 0x4b;
-    const isRar = magic4[0] === 0x52 && magic4[1] === 0x61 && magic4[2] === 0x72 && magic4[3] === 0x21;
-
-    if (isRar) return await extractSrtFromRar(buffer, null, null);
-    if (isZip) {
-      const entry = extractSrtFromZip(buffer, null, null);
-      return entry ? entry.data : null;
-    }
-    const str = buffer.slice(0, 30).toString('latin1');
-    if (/^\s*\d/.test(str) || str.includes('-->')) return buffer;
-    return null;
+    return buffer;
   } catch(e) {
     console.error('[yavka] download error:', e.message);
     return null;
   }
 }
 
-// ─── Helpers ─────────────────────────────────────────────────────────────────
+async function downloadYavkaFiltered(downloadPath, season, episode) {
+  const buffer = await downloadYavkaRaw(downloadPath);
+  if (!buffer) return null;
+
+  const magic4 = buffer.slice(0, 4);
+  const isZip = magic4[0] === 0x50 && magic4[1] === 0x4b;
+  const isRar = magic4[0] === 0x52 && magic4[1] === 0x61 && magic4[2] === 0x72 && magic4[3] === 0x21;
+
+  // If we have episode info, check filenames first
+  if (season && episode) {
+    const s = String(season).padStart(2, '0');
+    const e = String(episode).padStart(2, '0');
+    const epPat = new RegExp('S' + s + 'E' + e + '|' + season + 'x' + e, 'i');
+
+    if (isZip) {
+      const entries = parseZip(buffer);
+      const srts = entries.filter(f => /\.(srt|sub)$/i.test(f.name));
+      const match = srts.find(f => epPat.test(f.name));
+      if (!match) { console.log('[yavka] no episode match in zip, skipping'); return null; }
+      console.log('[yavka] matched:', match.name);
+      return match.data;
+    }
+    if (isRar) {
+      const srt = await extractSrtFromRar(buffer, season, episode);
+      if (!srt) { console.log('[yavka] no episode match in rar, skipping'); return null; }
+      return srt;
+    }
+  }
+
+  // No episode filter or raw SRT
+  if (isRar) return await extractSrtFromRar(buffer, null, null);
+  if (isZip) { const entry = extractSrtFromZip(buffer, null, null); return entry ? entry.data : null; }
+  const str = buffer.slice(0, 30).toString('latin1');
+  if (/^\s*\d/.test(str) || str.includes('-->')) return buffer;
+  return null;
+}
 
 function parseRequest(id) {
   const decodedId = decodeURIComponent(id);
@@ -931,10 +954,13 @@ const server = http.createServer(async (req, res) => {
     const key = decodeURIComponent(proxyMatch[1]);
     let data = srtCache.get(key);
     if (!data && key.startsWith('yavka__')) {
-      const subId = key.split('__')[1];
-      console.log(`[proxy] cache miss, re-downloading yavka: ${subId}`);
+      const parts = key.split('__');
+      const subId = parts[1];
+      const epSeason = parts[2] ? parseInt(parts[2]) : null;
+      const epEpisode = parts[3] && parts[3] !== 'n' ? parseInt(parts[3]) : null;
+      console.log(`[proxy] cache miss, re-downloading yavka: ${subId} S${epSeason}E${epEpisode}`);
       try {
-        const d = await downloadYavka(`/subs/${subId}/BG/`);
+        const d = await downloadYavkaFiltered(`/subs/${subId}/BG/`, epSeason, epEpisode);
         if (d) { data = toUtf8Srt(d); srtCache.set(key, data); }
       } catch(e) { console.error('[proxy] yavka re-download failed:', e.message); }
     }
@@ -1065,25 +1091,13 @@ const server = http.createServer(async (req, res) => {
     console.log(`[yavka found] ${yavkaResults.length}`);
 
     const host = req.headers.host || `localhost:${PORT}`;
-    const subtitles = [];
-    for (const s of yavkaResults.slice(0, 8)) {
-      try {
-        const key = `yavka__${s.subId}`;
-        if (!srtCache.has(key)) {
-          const data = await downloadYavka(s.downloadPath);
-          if (!data) continue;
-          srtCache.set(key, toUtf8Srt(data));
-        }
-        subtitles.push({
-          id: `yavka-${s.subId}`,
-          url: `https://${host}/proxy/${encodeURIComponent(key)}.srt`,
-          lang: 'bul',
-          name: s.subTitle,
-        });
-      } catch(e) {
-        console.error(`[yavka proxy] error for ${s.subId}:`, e.message);
-      }
-    }
+    const sKey = season ? `__${season}__${episode ?? 'n'}` : '';
+    const subtitles = yavkaResults.slice(0, 8).map(s => ({
+      id: `yavka-${s.subId}`,
+      url: `https://${host}/proxy/${encodeURIComponent('yavka__' + s.subId + sKey)}.srt`,
+      lang: 'bul',
+      name: s.subTitle,
+    }));
     console.log(`[yavka response] ${subtitles.length} subtitles`);
     res.setHeader('Content-Type', 'application/json');
     return res.end(JSON.stringify({ subtitles }));
