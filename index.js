@@ -747,6 +747,7 @@ async function searchYavka(imdbId, title, season, episode) {
     // /content endpoint — simple page fetch, no captcha needed for search results page
     const { status, text: html } = await browserlessPost('/content', { url: searchUrl }, true, 30000);
     if (status !== 200 || !html) { console.log('[yavka] content fetch failed, status:', status); return []; }
+    console.log('[yavka] html length:', html.length, 'snippet:', html.slice(0, 200).replace(/\s+/g, ' '));
 
     const results = [];
     const seen = new Set();
