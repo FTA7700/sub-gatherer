@@ -207,10 +207,10 @@ function extractAllSrtsFromZip(zipBuf, season, episode) {
 
   const s = String(season).padStart(2, '0');
   const e = String(episode).padStart(2, '0');
+  // Strict patterns: episode must appear as E04 or 4x04 not followed by digit
   const patterns = [
-    new RegExp(`S${s}E${e}`, 'i'),
-    new RegExp(`${season}x${e}`, 'i'),
-    new RegExp(`\\.${e}\\.`, 'i'),
+    new RegExp('S' + s + 'E' + e + '(?:[^0-9]|$)', 'i'),
+    new RegExp(season + 'x' + e + '(?:[^0-9]|$)', 'i'),
   ];
 
   const matched = srts.filter(f => patterns.some(p => p.test(f.name)));
