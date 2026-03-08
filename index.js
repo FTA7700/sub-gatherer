@@ -745,22 +745,32 @@ async function searchYavka(imdbId, title, season, episode) {
     }
     console.log('[yavka] searching:', searchUrl);
 
-    // Use BQL goto (stealth) to get past Cloudflare on search page
+    // POST search form via BQL (stealth handles Cloudflare)
+    const postBody = 's=' + encodeURIComponent(title) + '&i=' + imdbId + '&l=BG&y=&u=&genre=';
     const bql = {
       query: `mutation SearchYavka {
-        goto(url: "${searchUrl}", waitUntil: networkIdle) { status }
-        html { html }
+        goto(url: "https://yavka.net/search", waitUntil: networkIdle) { status }
+        evaluate(content: """
+          (async () => {
+            const r = await fetch('https://yavka.net/search', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+              body: '${postBody}',
+              credentials: 'include'
+            });
+            return await r.text();
+          })()
+        """) { value }
       }`
     };
     const { status, text } = await browserlessPost('/stealth/bql', bql, true, 40000);
     console.log('[yavka] BQL search status:', status, 'response len:', text.length);
     if (status !== 200) { console.log('[yavka] BQL search failed:', text.slice(0, 300)); return []; }
-    console.log('[yavka] BQL raw (500):', text.slice(0, 500));
     let bqlResult;
     try { bqlResult = JSON.parse(text); } catch(e) { console.log('[yavka] BQL parse error:', text.slice(0, 200)); return []; }
-    const html = bqlResult && bqlResult.data && bqlResult.data.html && bqlResult.data.html.html || '';
-    console.log('[yavka] html length:', html.length, html ? 'snippet: ' + html.slice(0, 150).replace(/\s+/g, ' ') : '(empty)');
-    if (!html) { console.log('[yavka] empty html from BQL, full result:', JSON.stringify(bqlResult).slice(0, 400)); return []; }
+    const html = bqlResult && bqlResult.data && bqlResult.data.evaluate && bqlResult.data.evaluate.value || '';
+    console.log('[yavka] html length:', html.length, html ? 'snippet: ' + html.slice(0, 200).replace(/\s+/g, ' ') : '(empty)');
+    if (!html) { console.log('[yavka] empty html from BQL:', JSON.stringify(bqlResult).slice(0, 400)); return []; }
 
     const results = [];
     const seen = new Set();
