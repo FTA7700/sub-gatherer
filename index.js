@@ -759,15 +759,9 @@ async function searchYavka(imdbId, title, season, episode) {
     }
     console.log('[yavka] searching:', searchUrl);
 
-    // For series: use subtitles.php URL directly (has episode filter &e=NxNN built in)
-    // For movies: use POST search form
-    let bql;
-    if (season && episode) {
-      bql = { query: `mutation SearchYavka {\n        goto(url: "${searchUrl}", waitUntil: networkIdle) { status }\n        evaluate(content: """\n          (() => document.documentElement.outerHTML)()\n        """) { value }\n      }` };
-    } else {
-      const postBody = 'sea=' + encodeURIComponent(title) + '&i=' + imdbId + '&l=BG&y=&c=&u=&g=&cf-turnstile-response=&search=%EF%80%82+%D0%A2%D1%8A%D1%80%D1%81%D0%B5%D0%BD%D0%B5';
-      bql = { query: `mutation SearchYavka {\n        goto(url: "https://yavka.net/search", waitUntil: networkIdle) { status }\n        evaluate(content: """\n          (async () => {\n            const r = await fetch('https://yavka.net/search', {\n              method: 'POST',\n              headers: { 'Content-Type': 'application/x-www-form-urlencoded' },\n              body: '${postBody}',\n              credentials: 'include'\n            });\n            return await r.text();\n          })()\n        """) { value }\n      }` };
-    }
+    // POST search form via BQL (stealth handles Cloudflare)
+    const postBody = 'sea=' + encodeURIComponent(title) + '&i=' + imdbId + '&l=BG&y=&c=&u=&g=&cf-turnstile-response=&search=%EF%80%82+%D0%A2%D1%8A%D1%80%D1%81%D0%B5%D0%BD%D0%B5';
+    const bql = { query: `mutation SearchYavka {\n        goto(url: "https://yavka.net/search", waitUntil: networkIdle) { status }\n        evaluate(content: """\n          (async () => {\n            const r = await fetch('https://yavka.net/search', {\n              method: 'POST',\n              headers: { 'Content-Type': 'application/x-www-form-urlencoded' },\n              body: '${postBody}',\n              credentials: 'include'\n            });\n            return await r.text();\n          })()\n        """) { value }\n      }` };
     const { status, text } = await browserlessPost('/stealth/bql', bql, true, 40000);
     console.log('[yavka] BQL search status:', status, 'response len:', text.length);
     if (status !== 200) { console.log('[yavka] BQL search failed:', text.slice(0, 300)); return []; }
@@ -789,12 +783,27 @@ async function searchYavka(imdbId, title, season, episode) {
       if (seen.has(subId)) continue;
       seen.add(subId);
       const start = Math.max(0, m.index - 200);
-      const snippet = searchArea.slice(start, m.index + 100);
+      const snippet = searchArea.slice(start, m.index + 200);
       const titleMatch = snippet.match(/tooltiptitle="([^"]+)"/i) || snippet.match(/>([^<]{5,60})<\/a>/i);
       const subTitle = titleMatch ? titleMatch[1].trim() : ('Yavka #' + subId);
-      results.push({ subId, subTitle, downloadPath: '/subs/' + subId + '/BG/' });
+      // Also capture the full row text for episode matching
+      const rowText = snippet;
+      results.push({ subId, subTitle, rowText, downloadPath: '/subs/' + subId + '/BG/' });
     }
     console.log('[yavka] parsed', results.length, 'results');
+
+    // For series: filter results by episode if we have S/E info
+    if (season && episode && results.length > 1) {
+      const s = String(season).padStart(2, '0');
+      const e = String(episode).padStart(2, '0');
+      const epPat = new RegExp('s' + s + 'e' + e + '|' + season + 'x' + e, 'i');
+      const filtered = results.filter(r => epPat.test(r.subTitle) || epPat.test(r.rowText));
+      if (filtered.length > 0) {
+        console.log('[yavka] episode filtered to', filtered.length, 'results');
+        return filtered;
+      }
+    }
+
     return results;
   } catch(e) {
     console.error('[yavka] search error:', e.message);
