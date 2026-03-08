@@ -793,7 +793,7 @@ async function searchYavka(imdbId, title, season, episode) {
     console.log('[yavka] parsed', results.length, 'results');
     if (results.length > 0) {
       console.log('[yavka] titles:', results.map(r => r.subTitle).join(' | '));
-      console.log('[yavka] first rowText snippet:', results[0].rowText.replace(/\s+/g, ' ').slice(0, 300));
+      console.log('[yavka] row classes:', results.map(r => (r.rowText.match(/class="([^"]*season[^"]*)"/i) || [])[1] || '?').join(' | '));
     }
 
     // For series: filter results by episode if we have S/E info
