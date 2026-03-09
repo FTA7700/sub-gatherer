@@ -177,9 +177,13 @@ async function searchSubtitles(imdbId, title, year, season, episode) {
 }
 
 function buildQueries(title, season, episode) {
-  // Build a simplified title — strip ": Part X", ": Chapter X", etc.
-  const simplified = title.replace(/\s*:\s*(part|chapter|volume|vol\.?)\s+\w+/i, '').trim();
-  const titles = simplified !== title ? [title, simplified] : [title];
+  // Build simplified titles to try
+  const partSimplified = title.replace(/\s*:\s*(part|chapter|volume|vol\.?)\s+\w+/i, '').trim();
+  const preColon = title.includes(':') ? title.replace(/\s*:.*$/, '').trim() : null;
+
+  const titles = [title];
+  if (partSimplified !== title) titles.push(partSimplified);
+  if (preColon && preColon !== title && preColon !== partSimplified) titles.push(preColon);
 
   if (season && episode) {
     const s = String(season).padStart(2, '0');
@@ -547,8 +551,11 @@ function filterUnacsResults(results, title, year, imdbId, season, episode) {
 }
 
 async function searchUnacs(title, year, season, episode, imdbId = null) {
-  const simplified = title.replace(/\s*:\s*(part|chapter|volume|vol\.?)\s+\w+/i, '').trim();
-  const titlesToTry = (simplified !== title) ? [title, simplified] : [title];
+  const partSimplified = title.replace(/\s*:\s*(part|chapter|volume|vol\.?)\s+\w+/i, '').trim();
+  const preColon = title.includes(':') ? title.replace(/\s*:.*$/, '').trim() : null;
+  const titlesToTry = [title];
+  if (partSimplified !== title) titlesToTry.push(partSimplified);
+  if (preColon && preColon !== title && preColon !== partSimplified) titlesToTry.push(preColon);
 
   for (const searchTitle of titlesToTry) {
     let query = searchTitle;
@@ -612,9 +619,9 @@ async function searchUnacs(title, year, season, episode, imdbId = null) {
     const filtered = filterUnacsResults(results, title, year, imdbId, season, episode);
     if (filtered.length > 0) return filtered;
 
-    // Try simplified title filter too
-    if (simplified !== title) {
-      const filteredSimple = filterUnacsResults(results, simplified, year, imdbId, season, episode);
+    // Try pre-colon title filter too
+    if (preColon && preColon !== title) {
+      const filteredSimple = filterUnacsResults(results, preColon, year, imdbId, season, episode);
       if (filteredSimple.length > 0) return filteredSimple;
     }
 
