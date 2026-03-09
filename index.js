@@ -662,6 +662,10 @@ async function downloadUnacs(subSlug, season, episode) {
   }
 
   if (isZip) {
+    if (season && episode) {
+      const entry = extractSrtFromZip(buffer, season, episode);
+      return entry ? [entry] : [];
+    }
     const entries = parseZip(buffer).filter(e => /\.(srt|sub)$/i.test(e.name));
     if (entries.length) return entries;
     console.log(`[unacs] no srt found in zip`);
