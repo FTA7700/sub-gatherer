@@ -306,7 +306,7 @@ async function extractSrtFromRar(rarBuf, season, episode, depth = 0) {
     const list = extractor.getFileList();
     const fileHeaders = [...list.fileHeaders];
 
-    const srtHeaders = fileHeaders.filter(f => f.name.toLowerCase().endsWith('.srt'));
+    const srtHeaders = fileHeaders.filter(f => /\.(srt|sub)$/i.test(f.name));
     const rarHeaders = fileHeaders.filter(f => f.name.toLowerCase().endsWith('.rar'));
     const zipHeaders = fileHeaders.filter(f => f.name.toLowerCase().endsWith('.zip'));
 
@@ -805,15 +805,25 @@ async function searchYavka(imdbId, title, season, episode) {
       if (results[1]) console.log('[yavka] row1:', results[1].rowText.replace(/\s+/g, ' ').slice(0, 800));
     }
 
-    // For series: filter results by episode if we have S/E info
+    // For series: filter by season class, then by episode in rowText
     if (season && episode && results.length > 1) {
       const s = String(season).padStart(2, '0');
       const e = String(episode).padStart(2, '0');
-      const epPat = new RegExp('s' + s + 'e' + e + '|' + season + 'x' + e, 'i');
-      const filtered = results.filter(r => epPat.test(r.subTitle) || epPat.test(r.rowText));
-      if (filtered.length > 0) {
-        console.log('[yavka] episode filtered to', filtered.length, 'results');
-        return filtered;
+      const epPat = new RegExp('S' + s + 'E' + e + '|' + season + 'x' + e, 'i');
+      const seasonPat = new RegExp('season' + season + '\\b', 'i');
+
+      // First try episode-level match
+      const epFiltered = results.filter(r => epPat.test(r.subTitle) || epPat.test(r.rowText));
+      if (epFiltered.length > 0) {
+        console.log('[yavka] episode filtered to', epFiltered.length, 'results');
+        return epFiltered;
+      }
+
+      // Fall back to season-level match (season packs)
+      const seasonFiltered = results.filter(r => seasonPat.test(r.rowText));
+      if (seasonFiltered.length > 0) {
+        console.log('[yavka] season filtered to', seasonFiltered.length, 'results');
+        return seasonFiltered;
       }
     }
 
