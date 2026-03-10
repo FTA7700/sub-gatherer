@@ -201,7 +201,7 @@ function buildQueries(title, season, episode) {
 
 function extractSrtFromZip(zipBuf, season, episode) {
   const entries = parseZip(zipBuf);
-  const srts = entries.filter(e => /\.(srt|sub)$/i.test(e.name));
+  const srts = entries.filter(e => /\.srt$/i.test(e.name));
   if (srts.length === 0) return null;
   if (srts.length === 1) return srts[0];
   if (!season || !episode) return srts[0];
@@ -225,7 +225,7 @@ function extractSrtFromZip(zipBuf, season, episode) {
 
 function extractAllSrtsFromZip(zipBuf, season, episode) {
   const entries = parseZip(zipBuf);
-  const srts = entries.filter(e => /\.(srt|sub)$/i.test(e.name));
+  const srts = entries.filter(e => /\.srt$/i.test(e.name));
   if (srts.length === 0) return [];
   if (!season || !episode) return srts;
 
@@ -306,7 +306,7 @@ async function extractSrtFromRar(rarBuf, season, episode, depth = 0) {
     const list = extractor.getFileList();
     const fileHeaders = [...list.fileHeaders];
 
-    const srtHeaders = fileHeaders.filter(f => /\.(srt|sub)$/i.test(f.name));
+    const srtHeaders = fileHeaders.filter(f => /\.srt$/i.test(f.name));
     const rarHeaders = fileHeaders.filter(f => f.name.toLowerCase().endsWith('.rar'));
     const zipHeaders = fileHeaders.filter(f => f.name.toLowerCase().endsWith('.zip'));
 
@@ -383,7 +383,7 @@ async function extractAllSrtsFromRar(rarBuf, depth = 0) {
     const extractor = await createExtractorFromData({ data: rarBuf });
     const list = extractor.getFileList();
     const fileHeaders = [...list.fileHeaders];
-    const srtHeaders = fileHeaders.filter(f => /\.(srt|sub)$/i.test(f.name));
+    const srtHeaders = fileHeaders.filter(f => /\.srt$/i.test(f.name));
     if (srtHeaders.length > 0) {
       for (const h of srtHeaders) {
         const extracted = extractor.extract({ files: [h.name] });
@@ -408,7 +408,7 @@ async function extractAllSrtsFromRar(rarBuf, depth = 0) {
       const extracted = extractor.extract({ files: [h.name] });
       const files = [...extracted.files];
       if (files.length && files[0].extraction) {
-        const entries = parseZip(Buffer.from(files[0].extraction)).filter(e => /\.(srt|sub)$/i.test(e.name));
+        const entries = parseZip(Buffer.from(files[0].extraction)).filter(e => /\.srt$/i.test(e.name));
         results.push(...entries);
       }
     }
@@ -666,7 +666,7 @@ async function downloadUnacs(subSlug, season, episode) {
       const entry = extractSrtFromZip(buffer, season, episode);
       return entry ? [entry] : [];
     }
-    const entries = parseZip(buffer).filter(e => /\.(srt|sub)$/i.test(e.name));
+    const entries = parseZip(buffer).filter(e => /\.srt$/i.test(e.name));
     if (entries.length) return entries;
     console.log(`[unacs] no srt found in zip`);
     return [];
@@ -911,7 +911,7 @@ async function downloadYavkaFiltered(downloadPath, season, episode) {
 
     if (isZip) {
       const entries = parseZip(buffer);
-      const srts = entries.filter(f => /\.(srt|sub)$/i.test(f.name));
+      const srts = entries.filter(f => /\.srt$/i.test(f.name));
       const match = srts.find(f => epPat.test(f.name));
       if (!match) { console.log('[yavka] no episode match in zip, skipping'); return null; }
       console.log('[yavka] matched:', match.name);
@@ -1084,7 +1084,7 @@ const server = http.createServer(async (req, res) => {
         for (let i = 0; i < entries.length; i++) {
           const key = entries.length === 1 ? baseKey : `${baseKey}__${i}`;
           srtCache.set(key, toUtf8Srt(entries[i].data));
-          const srtName = entries[i].name.split('/').pop().replace(/\.(srt|sub)$/i, '');
+          const srtName = entries[i].name.split('/').pop().replace(/\.srt$/i, '');
           subtitles.push({ id: `unacs-${s.subId}-${i}`, url: `https://${host}/proxy/${encodeURIComponent(key)}.srt`, lang: s.lang, name: srtName || s.subTitle });
           if (subtitles.length >= 10) break;
         }
