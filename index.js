@@ -972,15 +972,25 @@ async function downloadYavkaFiltered(downloadPath, season, episode) {
 // ─── OpenSubtitles.com ────────────────────────────────────────────────────────
 
 async function searchOpenSubs(imdbId, season, episode) {
-  const numericId = imdbId.replace('tt', '');
-  let url = `${OPENSUBS_BASE}/subtitles?imdb_id=${numericId}&languages=bg,en&order_by=download_count`;
-  if (season) url += `&season_number=${season}`;
-  if (episode) url += `&episode_number=${episode}`;
+  // Strip tt prefix and leading zeros as required by the API
+  const numericId = String(parseInt(imdbId.replace('tt', ''), 10));
+
+  // Parameters must be sorted alphabetically for fastest response (avoids redirect)
+  const params = new URLSearchParams();
+  if (episode) params.set('episode_number', String(episode));
+  params.set('imdb_id', numericId);
+  params.set('languages', 'bg,en');
+  params.set('order_by', 'download_count');
+  if (season) params.set('season_number', String(season));
+
+  const url = `${OPENSUBS_BASE}/subtitles?${params.toString()}`;
+  console.log(`[opensubs] searching: ${url}`);
 
   const { buffer } = await fetchBuffer(url, {
+    'Accept': '*/*',
     'Api-Key': OPENSUBS_API_KEY,
     'Content-Type': 'application/json',
-    'User-Agent': 'fta/1.0',
+    'User-Agent': 'fta v1.0',
   });
 
   const json = JSON.parse(buffer.toString('utf8'));
@@ -1008,9 +1018,10 @@ async function downloadOpenSubs(fileId) {
       path: u.pathname,
       method: 'POST',
       headers: {
+        'Accept': '*/*',
         'Api-Key': OPENSUBS_API_KEY,
         'Content-Type': 'application/json',
-        'User-Agent': 'fta/1.0',
+        'User-Agent': 'fta v1.0',
         'Content-Length': Buffer.byteLength(body),
       },
     }, (res) => {
