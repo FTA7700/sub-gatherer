@@ -197,11 +197,25 @@ function buildQueries(title, season, episode) {
   return [...new Set(titles)];
 }
 
+// Detect if a .sub file is actually SRT format (timestamp-based) vs MicroDVD (frame-based)
+function isSrtContent(buf) {
+  const head = buf.slice(0, 200).toString('latin1');
+  if (/\d+[\r\n]+\d{2}:\d{2}:\d{2}[,\.]\d{3}\s+-->/.test(head)) return true;
+  if (/^\{[\d]+\}\{[\d]+\}/.test(head)) return false;
+  return head.includes('-->');
+}
+
+function isSrtEntry(entry) {
+  if (/\.srt$/i.test(entry.name)) return true;
+  if (/\.sub$/i.test(entry.name)) return isSrtContent(entry.data);
+  return false;
+}
+
 // ─── ZIP extraction ───────────────────────────────────────────────────────────
 
 function extractSrtFromZip(zipBuf, season, episode) {
   const entries = parseZip(zipBuf);
-  const srts = entries.filter(e => /\.srt$/i.test(e.name));
+  const srts = entries.filter(isSrtEntry);
   if (srts.length === 0) return null;
   if (srts.length === 1) return srts[0];
   if (!season || !episode) return srts[0];
@@ -225,7 +239,7 @@ function extractSrtFromZip(zipBuf, season, episode) {
 
 function extractAllSrtsFromZip(zipBuf, season, episode) {
   const entries = parseZip(zipBuf);
-  const srts = entries.filter(e => /\.srt$/i.test(e.name));
+  const srts = entries.filter(isSrtEntry);
   if (srts.length === 0) return [];
   if (!season || !episode) return srts;
 
@@ -306,7 +320,7 @@ async function extractSrtFromRar(rarBuf, season, episode, depth = 0) {
     const list = extractor.getFileList();
     const fileHeaders = [...list.fileHeaders];
 
-    const srtHeaders = fileHeaders.filter(f => /\.srt$/i.test(f.name));
+    const srtHeaders = fileHeaders.filter(f => /\.(srt|sub)$/i.test(f.name));
     const rarHeaders = fileHeaders.filter(f => f.name.toLowerCase().endsWith('.rar'));
     const zipHeaders = fileHeaders.filter(f => f.name.toLowerCase().endsWith('.zip'));
 
@@ -314,7 +328,7 @@ async function extractSrtFromRar(rarBuf, season, episode, depth = 0) {
 
     // Direct SRTs found — pick best match
     if (srtHeaders.length > 0) {
-      let chosen = srtHeaders[0];
+      let candidates = srtHeaders;
       if (season && episode && srtHeaders.length > 1) {
         const s = String(season).padStart(2, '0');
         const e = String(episode).padStart(2, '0');
@@ -323,15 +337,22 @@ async function extractSrtFromRar(rarBuf, season, episode, depth = 0) {
           new RegExp(`${season}x${e}`, 'i'),
         ];
         for (const pat of patterns) {
-          const match = srtHeaders.find(f => pat.test(f.name));
-          if (match) { chosen = match; break; }
+          const matched = srtHeaders.filter(f => pat.test(f.name));
+          if (matched.length > 0) { candidates = matched; break; }
         }
       }
-      const extracted = extractor.extract({ files: [chosen.name] });
-      const files = [...extracted.files];
-      if (files.length && files[0].extraction) {
-        console.log(`[rar:${depth}] extracted: ${chosen.name}`);
-        return Buffer.from(files[0].extraction);
+      for (const chosen of candidates) {
+        const extracted = extractor.extract({ files: [chosen.name] });
+        const files = [...extracted.files];
+        if (files.length && files[0].extraction) {
+          const buf = Buffer.from(files[0].extraction);
+          if (/\.sub$/i.test(chosen.name) && !isSrtContent(buf)) {
+            console.log(`[rar:${depth}] skipping MicroDVD: ${chosen.name}`);
+            continue;
+          }
+          console.log(`[rar:${depth}] extracted: ${chosen.name}`);
+          return buf;
+        }
       }
     }
 
@@ -383,16 +404,18 @@ async function extractAllSrtsFromRar(rarBuf, depth = 0) {
     const extractor = await createExtractorFromData({ data: rarBuf });
     const list = extractor.getFileList();
     const fileHeaders = [...list.fileHeaders];
-    const srtHeaders = fileHeaders.filter(f => /\.srt$/i.test(f.name));
+    const srtHeaders = fileHeaders.filter(f => /\.(srt|sub)$/i.test(f.name));
     if (srtHeaders.length > 0) {
       for (const h of srtHeaders) {
         const extracted = extractor.extract({ files: [h.name] });
         const files = [...extracted.files];
         if (files.length && files[0].extraction) {
-          results.push({ name: h.name, data: Buffer.from(files[0].extraction) });
+          const buf = Buffer.from(files[0].extraction);
+          if (/\.sub$/i.test(h.name) && !isSrtContent(buf)) continue;
+          results.push({ name: h.name, data: buf });
         }
       }
-      return results;
+      if (results.length > 0) return results;
     }
     const rarHeaders = fileHeaders.filter(f => f.name.toLowerCase().endsWith('.rar'));
     for (const h of rarHeaders) {
@@ -408,7 +431,7 @@ async function extractAllSrtsFromRar(rarBuf, depth = 0) {
       const extracted = extractor.extract({ files: [h.name] });
       const files = [...extracted.files];
       if (files.length && files[0].extraction) {
-        const entries = parseZip(Buffer.from(files[0].extraction)).filter(e => /\.srt$/i.test(e.name));
+        const entries = parseZip(Buffer.from(files[0].extraction)).filter(isSrtEntry);
         results.push(...entries);
       }
     }
@@ -666,7 +689,7 @@ async function downloadUnacs(subSlug, season, episode) {
       const entry = extractSrtFromZip(buffer, season, episode);
       return entry ? [entry] : [];
     }
-    const entries = parseZip(buffer).filter(e => /\.srt$/i.test(e.name));
+    const entries = parseZip(buffer).filter(isSrtEntry);
     if (entries.length) return entries;
     console.log(`[unacs] no srt found in zip`);
     return [];
@@ -911,7 +934,7 @@ async function downloadYavkaFiltered(downloadPath, season, episode) {
 
     if (isZip) {
       const entries = parseZip(buffer);
-      const srts = entries.filter(f => /\.srt$/i.test(f.name));
+      const srts = entries.filter(isSrtEntry);
       const match = srts.find(f => epPat.test(f.name));
       if (!match) { console.log('[yavka] no episode match in zip, skipping'); return null; }
       console.log('[yavka] matched:', match.name);
@@ -1084,7 +1107,7 @@ const server = http.createServer(async (req, res) => {
         for (let i = 0; i < entries.length; i++) {
           const key = entries.length === 1 ? baseKey : `${baseKey}__${i}`;
           srtCache.set(key, toUtf8Srt(entries[i].data));
-          const srtName = entries[i].name.split('/').pop().replace(/\.srt$/i, '');
+          const srtName = entries[i].name.split('/').pop().replace(/\.(srt|sub)$/i, '');
           subtitles.push({ id: `unacs-${s.subId}-${i}`, url: `https://${host}/proxy/${encodeURIComponent(key)}.srt`, lang: s.lang, name: srtName || s.subTitle });
           if (subtitles.length >= 10) break;
         }
