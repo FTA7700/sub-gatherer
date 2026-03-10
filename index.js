@@ -51,7 +51,7 @@ const MANIFEST_UNACS = {
 const MANIFEST_OPENSUBS = {
   id: 'community.opensubssubs',
   version: '1.0.0',
-  name: 'OpenSubtitles',
+  name: 'opensubtitles',
   description: 'Bulgarian & English subtitles from opensubtitles.com',
   types: ['movie', 'series'],
   catalogs: [],
