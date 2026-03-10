@@ -973,6 +973,7 @@ const server = http.createServer(async (req, res) => {
   const proxyMatch = path.match(/^\/proxy\/(.+)\.srt$/);
   if (proxyMatch) {
     const key = decodeURIComponent(proxyMatch[1]);
+    console.log(`[proxy] hit key: ${key}, cached: ${srtCache.has(key)}`);
     let data = srtCache.get(key);
     if (!data && key.startsWith('yavka__')) {
       const parts = key.split('__');
