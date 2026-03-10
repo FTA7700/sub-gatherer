@@ -17,7 +17,7 @@ const BASE_URL = 'http://subs.sab.bz';
 
 const MANIFEST_SABS = {
   id: 'community.sabsubs',
-  version: '1.2.0',
+  version: '1.5.0',
   name: 'SAB Subtitles',
   description: 'Bulgarian & English subtitles from subs.sab.bz',
   types: ['movie', 'series'],
@@ -28,7 +28,7 @@ const MANIFEST_SABS = {
 
 const MANIFEST_YAVKA = {
   id: 'community.yavkasubs',
-  version: '1.0.0',
+  version: '1.3.0',
   name: 'Yavka Subtitles',
   description: 'Bulgarian subtitles from yavka.net',
   types: ['movie', 'series'],
@@ -39,14 +39,28 @@ const MANIFEST_YAVKA = {
 
 const MANIFEST_UNACS = {
   id: 'community.unacsubs',
-  version: '1.2.0',
+  version: '1.5.0',
   name: 'UNACS Subtitles',
-  description: 'Bulgarian & English subtitles from subsunacs.net',
+  description: 'Bulgarian subtitles from subsunacs.net',
   types: ['movie', 'series'],
   catalogs: [],
   resources: ['subtitles'],
   idPrefixes: ['tt'],
 };
+
+const MANIFEST_OPENSUBS = {
+  id: 'community.opensubssubs',
+  version: '1.0.0',
+  name: 'OpenSubtitles',
+  description: 'Bulgarian & English subtitles from opensubtitles.com',
+  types: ['movie', 'series'],
+  catalogs: [],
+  resources: ['subtitles'],
+  idPrefixes: ['tt'],
+};
+
+const OPENSUBS_API_KEY = process.env.OPENSUBS_API_KEY || 'uVX46hV6vxveyCY5GxlaVjMRQKIgFN5f';
+const OPENSUBS_BASE = 'https://api.opensubtitles.com/api/v1';
 
 // ─── Minimal HTTP fetch (no dependencies) ────────────────────────────────────
 
@@ -955,6 +969,69 @@ async function downloadYavkaFiltered(downloadPath, season, episode) {
   return null;
 }
 
+// ─── OpenSubtitles.com ────────────────────────────────────────────────────────
+
+async function searchOpenSubs(imdbId, season, episode) {
+  const numericId = imdbId.replace('tt', '');
+  let url = `${OPENSUBS_BASE}/subtitles?imdb_id=${numericId}&languages=bg,en&order_by=download_count`;
+  if (season) url += `&season_number=${season}`;
+  if (episode) url += `&episode_number=${episode}`;
+
+  const { buffer } = await fetchBuffer(url, {
+    'Api-Key': OPENSUBS_API_KEY,
+    'Content-Type': 'application/json',
+    'User-Agent': 'fta/1.0',
+  });
+
+  const json = JSON.parse(buffer.toString('utf8'));
+  if (!json.data) return [];
+
+  return json.data.map(item => {
+    const attr = item.attributes;
+    const file = attr.files && attr.files[0];
+    return {
+      fileId: file ? file.file_id : null,
+      fileName: file ? file.file_name : attr.release,
+      lang: attr.language === 'bg' ? 'bul' : 'eng',
+      release: attr.release || '',
+      downloads: attr.download_count || 0,
+    };
+  }).filter(r => r.fileId);
+}
+
+async function downloadOpenSubs(fileId) {
+  const body = JSON.stringify({ file_id: fileId });
+  const { buffer } = await new Promise((resolve, reject) => {
+    const u = new URL(`${OPENSUBS_BASE}/download`);
+    const req = https.request({
+      hostname: u.hostname,
+      path: u.pathname,
+      method: 'POST',
+      headers: {
+        'Api-Key': OPENSUBS_API_KEY,
+        'Content-Type': 'application/json',
+        'User-Agent': 'fta/1.0',
+        'Content-Length': Buffer.byteLength(body),
+      },
+    }, (res) => {
+      const chunks = [];
+      res.on('data', c => chunks.push(c));
+      res.on('end', () => resolve({ buffer: Buffer.concat(chunks), headers: res.headers }));
+    });
+    req.on('error', reject);
+    req.setTimeout(15000, () => { req.destroy(); reject(new Error('Timeout')); });
+    req.write(body);
+    req.end();
+  });
+
+  const json = JSON.parse(buffer.toString('utf8'));
+  if (!json.link) throw new Error(`No download link: ${buffer.toString('utf8').slice(0, 200)}`);
+
+  // Fetch the actual SRT file
+  const { buffer: srtBuf } = await fetchBuffer(json.link);
+  return srtBuf;
+}
+
 function parseRequest(id) {
   const decodedId = decodeURIComponent(id);
   const parts = decodedId.split(':');
@@ -985,6 +1062,10 @@ const server = http.createServer(async (req, res) => {
   if (path === '/yavka/manifest.json') {
     res.setHeader('Content-Type', 'application/json');
     return res.end(JSON.stringify(MANIFEST_YAVKA));
+  }
+  if (path === '/opensubs/manifest.json') {
+    res.setHeader('Content-Type', 'application/json');
+    return res.end(JSON.stringify(MANIFEST_OPENSUBS));
   }
   // Legacy route
   if (path === '/manifest.json') {
@@ -1026,6 +1107,16 @@ const server = http.createServer(async (req, res) => {
         console.error('[proxy] unacs re-download failed:', e.message);
       }
     }
+    if (!data && key.startsWith('opensubs__')) {
+      const fileId = parseInt(key.split('__')[1]);
+      console.log(`[proxy] cache miss, downloading opensubs fileId: ${fileId}`);
+      try {
+        const srtBuf = await downloadOpenSubs(fileId);
+        if (srtBuf) { data = toUtf8Srt(srtBuf); srtCache.set(key, data); }
+      } catch (e) {
+        console.error('[proxy] opensubs download failed:', e.message);
+      }
+    }
     if (!data) {
       res.writeHead(404);
       return res.end('Not found');
@@ -1047,11 +1138,12 @@ const server = http.createServer(async (req, res) => {
     console.log(`[title] "${title}" (${year})`);
 
     const sabsResults = await searchSubtitles(imdbId, title, year, season, episode).catch(e => { console.error('[sabs] search failed:', e.message); return []; });
-    console.log(`[sabs found] ${sabsResults.length}`);
+    const sabsBg = sabsResults.filter(s => s.lang === 'bul');
+    console.log(`[sabs found] ${sabsBg.length} (BG only, was ${sabsResults.length})`);
 
     const host = req.headers.host || `localhost:${PORT}`;
     const subtitles = [];
-    for (const s of sabsResults.slice(0, 8)) {
+    for (const s of sabsBg.slice(0, 8)) {
       if (subtitles.length >= 10) break;
       try {
         const keys = await buildSrtProxies(s.attachId, season, episode);
@@ -1087,11 +1179,12 @@ const server = http.createServer(async (req, res) => {
     console.log(`[title] "${title}" (${year})`);
 
     const unacsResults = await searchUnacs(title, year, season, episode, imdbId).catch(e => { console.error('[unacs] search failed:', e.message); return []; });
-    console.log(`[unacs found] ${unacsResults.length}`);
+    const unacsBg = unacsResults.filter(s => s.lang === 'bul');
+    console.log(`[unacs found] ${unacsBg.length} (BG only, was ${unacsResults.length})`);
 
     const host = req.headers.host || `localhost:${PORT}`;
     const subtitles = [];
-    for (const s of unacsResults.slice(0, 8)) {
+    for (const s of unacsBg.slice(0, 8)) {
       if (subtitles.length >= 10) break;
       try {
         const baseKey = `unacs__${s.subSlug}__${season ?? 'n'}__${episode ?? 'n'}`;
@@ -1148,6 +1241,33 @@ const server = http.createServer(async (req, res) => {
     return res.end(JSON.stringify({ subtitles }));
   }
 
+  // OpenSubtitles subtitles
+  const opensubsMatch = path.match(/^\/opensubs\/subtitles\/(\w+)\/(.+)\.json$/);
+  if (opensubsMatch) {
+    const [, type, id] = opensubsMatch;
+    const { imdbId, season, episode } = parseRequest(id);
+    console.log(`[opensubs request] ${type} ${imdbId} S${season}E${episode}`);
+
+    const results = await searchOpenSubs(imdbId, season, episode).catch(e => { console.error('[opensubs] search failed:', e.message); return []; });
+    // BG first, then EN
+    const sorted = [...results.filter(r => r.lang === 'bul'), ...results.filter(r => r.lang === 'eng')];
+    console.log(`[opensubs found] ${sorted.length} (${sorted.filter(r=>r.lang==='bul').length} BG, ${sorted.filter(r=>r.lang==='eng').length} EN)`);
+
+    const host = req.headers.host || `localhost:${PORT}`;
+    const subtitles = sorted.slice(0, 10).map(s => {
+      const key = `opensubs__${s.fileId}`;
+      return {
+        id: `opensubs-${s.fileId}`,
+        url: `https://${host}/proxy/${encodeURIComponent(key)}.srt`,
+        lang: s.lang,
+        name: `[OS] ${s.release || s.fileName || s.fileId}`,
+      };
+    });
+    console.log(`[opensubs response] ${subtitles.length} subtitles`);
+    res.setHeader('Content-Type', 'application/json');
+    return res.end(JSON.stringify({ subtitles }));
+  }
+
   res.writeHead(404);
   res.end('Not found');
 });
@@ -1157,9 +1277,10 @@ server.listen(PORT, () => {
 ╔══════════════════════════════════════════════════════╗
 ║         BG Subtitles — Stremio Addon                 ║
 ╠══════════════════════════════════════════════════════╣
-║  SAB:   https://sub-gatherer.onrender.com/sabs/manifest.json  ║
-║  UNACS: https://sub-gatherer.onrender.com/unacs/manifest.json ║
-║  YAVKA: https://sub-gatherer.onrender.com/yavka/manifest.json ║
+║  SAB:      https://sub-gatherer.onrender.com/sabs/manifest.json     ║
+║  UNACS:    https://sub-gatherer.onrender.com/unacs/manifest.json    ║
+║  YAVKA:    https://sub-gatherer.onrender.com/yavka/manifest.json    ║
+║  OPENSUBS: https://sub-gatherer.onrender.com/opensubs/manifest.json ║
 ╚══════════════════════════════════════════════════════╝
 `);
 });
