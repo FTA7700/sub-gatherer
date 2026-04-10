@@ -125,13 +125,16 @@ async function searchSubtitles(imdbId, title, year, season, episode) {
   const results = [];
 
   for (const query of queries) {
-    const yearStr = year ? `&y=${year}` : '';
-    const searchUrl = `${BASE_URL}/index.php?act=search&movie=${encodeURIComponent(query)}${yearStr}`;
-    console.log(`[search] URL: ${searchUrl}`);
+    const postBody = 'act=search&movie=' + encodeURIComponent(query) +
+      '&select-language=2&upldr=&yr=' + (year || '') + '&release=';
+    console.log(`[search] POST query: "${query}" year: ${year || 'any'}`);
 
     let html;
     try {
-      html = await fetchText(searchUrl);
+      const { buffer } = await fetchPost(`${BASE_URL}/index.php?`, postBody, {
+        'Referer': `${BASE_URL}/index.php?act=search`,
+      });
+      html = decodeWindows1251(buffer);
       console.log(`[search] got ${html.length} bytes`);
     } catch (e) {
       console.error('[search] fetch error:', e.message);
