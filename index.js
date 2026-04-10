@@ -551,10 +551,12 @@ const BROWSERLESS_TOKEN = process.env.BROWSERLESS_TOKEN || '';
 function fetchPost(urlStr, body, extraHeaders = {}) {
   return new Promise((resolve, reject) => {
     const u = new URL(urlStr);
+    const isHttps = u.protocol === 'https:';
+    const lib = isHttps ? https : http;
     const postData = Buffer.from(body, 'utf8');
     const options = {
       hostname: u.hostname,
-      port: 443,
+      port: u.port || (isHttps ? 443 : 80),
       path: u.pathname + u.search,
       method: 'POST',
       headers: {
@@ -567,7 +569,7 @@ function fetchPost(urlStr, body, extraHeaders = {}) {
         ...extraHeaders,
       },
     };
-    const req = https.request(options, (res) => {
+    const req = lib.request(options, (res) => {
       if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
         const loc = res.headers.location.startsWith('http') ? res.headers.location : UNACS_BASE + res.headers.location;
         return fetchBuffer(loc).then(resolve).catch(reject);
@@ -640,9 +642,8 @@ async function searchUnacs(title, year, season, episode, imdbId = null, director
     }
 
     const yearParam = year ? String(year) : '0';
-    // Include director if available — UNACS supports "Режисьор" field
-    const directorParam = director ? '&r=' + encodeURIComponent(director.split(',')[0].trim()) : '';
-    const body = 'm=' + encodeURIComponent(query) + '&l=0&y=' + yearParam + directorParam + '&t=Submit&action=+%D2%FA%F0%F1%E8+';
+    const dirStr = director ? encodeURIComponent(director.split(',')[0].trim()) : '';
+    const body = 'm=' + encodeURIComponent(query) + '&l=0&c=&y=' + yearParam + '&action=+++%D2%FA%F0%F1%E8+++&a=&d=' + dirStr + '&u=&g=&t=Submit';
     console.log('[unacs] searching: "' + query + '"' + (director ? ' director: ' + director.split(',')[0].trim() : ''));
 
     let html;
