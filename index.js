@@ -604,13 +604,13 @@ function filterUnacsResults(results, title, year, imdbId, season, episode) {
   };
   const byTitle = results.filter(titleMatches);
   console.log(`[unacs filter] title "${title}" (norm: "${normTitle}", len: ${normTitle.length}) matches: ${byTitle.length} / ${results.length}`);
-  const base = byTitle.length > 0 ? byTitle : results;
+  if (byTitle.length === 0) return [];
 
   if (year) {
-    const byYear = base.filter(r => r.rowYear === year);
+    const byYear = byTitle.filter(r => r.rowYear === year);
     if (byYear.length > 0) return byYear;
   }
-  return base;
+  return byTitle;
 }
 
 async function searchUnacs(title, year, season, episode, imdbId = null) {
@@ -687,8 +687,6 @@ async function searchUnacs(title, year, season, episode, imdbId = null) {
       const filteredSimple = filterUnacsResults(results, preColon, year, imdbId, season, episode);
       if (filteredSimple.length > 0) return filteredSimple;
     }
-
-    if (results.length > 0) return results.slice(0, 8);
   }
   return [];
 }
