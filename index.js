@@ -181,8 +181,20 @@ async function searchSubtitles(imdbId, title, year, season, episode) {
     return results.filter(r => r.rowImdb === imdbId);
   }
 
-  // Fallback: filter by year if available (handles cases where IMDb ID not in row)
+  // Fallback: filter by IMDb ID not in row — try exact title + year match
   if (year && results.length > 0) {
+    const normalizedTitle = title.toLowerCase().trim();
+    const byTitleYear = results.filter(r => {
+      if (!r.subTitle) return false;
+      const st = r.subTitle.toLowerCase();
+      return st.includes(String(year)) && (
+        st.startsWith(normalizedTitle) ||
+        st.includes(`(${normalizedTitle})`) ||
+        st.replace(/\s*\(.*?\)\s*/g, '').trim() === normalizedTitle
+      );
+    });
+    if (byTitleYear.length > 0) return byTitleYear;
+    // Looser year-only fallback
     const byYear = results.filter(r => r.subTitle && r.subTitle.includes(String(year)));
     if (byYear.length > 0) return byYear;
   }
@@ -576,8 +588,20 @@ function filterUnacsResults(results, title, year, imdbId, season, episode) {
 
   // Priority 3: Title + year match
   const norm = s => s.toLowerCase().replace(/[^a-z0-9]/g, '');
+  const normWords = s => s.toLowerCase().replace(/[^a-z0-9 ]/g, '').trim();
   const normTitle = norm(title);
-  const byTitle = results.filter(r => norm(r.subTitle).includes(normTitle));
+  const normTitleWords = normWords(title);
+  // For short titles use word-boundary match to avoid "her" matching "How I Met Your Mother"
+  const titleMatches = r => {
+    const rNorm = norm(r.subTitle);
+    const rWords = normWords(r.subTitle);
+    if (normTitle.length <= 6) {
+      // Exact match or title appears as a whole word segment
+      return rNorm === normTitle || new RegExp('(^|\\s)' + normTitleWords + '(\\s|$)').test(rWords);
+    }
+    return rNorm.includes(normTitle);
+  };
+  const byTitle = results.filter(titleMatches);
   const base = byTitle.length > 0 ? byTitle : results;
 
   if (year) {
