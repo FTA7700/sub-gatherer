@@ -125,7 +125,8 @@ async function searchSubtitles(imdbId, title, year, season, episode) {
   const results = [];
 
   for (const query of queries) {
-    const searchUrl = `${BASE_URL}/index.php?act=search&movie=${encodeURIComponent(query)}`;
+    const yearStr = year ? `&y=${year}` : '';
+    const searchUrl = `${BASE_URL}/index.php?act=search&movie=${encodeURIComponent(query)}${yearStr}`;
     console.log(`[search] URL: ${searchUrl}`);
 
     let html;
@@ -489,7 +490,7 @@ async function getTitleFromImdb(imdbId) {
       const data = JSON.parse(buffer.toString());
       console.log(`[omdb] response: ${JSON.stringify(data).slice(0, 120)}`);
       if (data.Title) {
-        const result = { title: data.Title, year: data.Year ? parseInt(data.Year) : null };
+        const result = { title: data.Title, year: data.Year ? parseInt(data.Year) : null, director: data.Director || null };
         titleCache.set(imdbId, result);
         return result;
       }
@@ -621,7 +622,7 @@ function filterUnacsResults(results, title, year, imdbId, season, episode) {
   return byTitle;
 }
 
-async function searchUnacs(title, year, season, episode, imdbId = null) {
+async function searchUnacs(title, year, season, episode, imdbId = null, director = null) {
   const partSimplified = title.replace(/\s*:\s*(part|chapter|volume|vol\.?)\s+\w+/i, '').trim();
   const preColon = title.includes(':') ? title.replace(/\s*:.*$/, '').trim() : null;
   const titlesToTry = [title];
@@ -636,8 +637,10 @@ async function searchUnacs(title, year, season, episode, imdbId = null) {
     }
 
     const yearParam = year ? String(year) : '0';
-    const body = 'm=' + encodeURIComponent(query) + '&l=0&y=' + yearParam + '&t=Submit&action=+%D2%FA%F0%F1%E8+';
-    console.log('[unacs] searching: "' + query + '"');
+    // Include director if available — UNACS supports "Режисьор" field
+    const directorParam = director ? '&r=' + encodeURIComponent(director.split(',')[0].trim()) : '';
+    const body = 'm=' + encodeURIComponent(query) + '&l=0&y=' + yearParam + directorParam + '&t=Submit&action=+%D2%FA%F0%F1%E8+';
+    console.log('[unacs] searching: "' + query + '"' + (director ? ' director: ' + director.split(',')[0].trim() : ''));
 
     let html;
     try {
@@ -1218,10 +1221,10 @@ const server = http.createServer(async (req, res) => {
 
     const titleInfo = await getTitleFromImdb(imdbId);
     if (!titleInfo) return res.end(JSON.stringify({ subtitles: [] }));
-    const { title, year } = titleInfo;
-    console.log(`[title] "${title}" (${year})`);
+    const { title, year, director } = titleInfo;
+    console.log(`[title] "${title}" (${year})${director ? ' dir: ' + director : ''}`);
 
-    const unacsResults = await searchUnacs(title, year, season, episode, imdbId).catch(e => { console.error('[unacs] search failed:', e.message); return []; });
+    const unacsResults = await searchUnacs(title, year, season, episode, imdbId, director).catch(e => { console.error('[unacs] search failed:', e.message); return []; });
     const unacsBg = unacsResults.filter(s => s.lang === 'bul');
     console.log(`[unacs found] ${unacsBg.length} (BG only, was ${unacsResults.length})`);
 
