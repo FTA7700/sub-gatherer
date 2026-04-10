@@ -575,6 +575,7 @@ function filterUnacsResults(results, title, year, imdbId, season, episode) {
   // Priority 1: IMDb ID match
   if (imdbId) {
     const byImdb = results.filter(r => r.rowImdbId === imdbId);
+    console.log(`[unacs filter] imdb ${imdbId} matches: ${byImdb.length}`);
     if (byImdb.length > 0) return byImdb;
   }
 
@@ -602,6 +603,7 @@ function filterUnacsResults(results, title, year, imdbId, season, episode) {
     return rNorm.includes(normTitle);
   };
   const byTitle = results.filter(titleMatches);
+  console.log(`[unacs filter] title "${title}" (norm: "${normTitle}", len: ${normTitle.length}) matches: ${byTitle.length} / ${results.length}`);
   const base = byTitle.length > 0 ? byTitle : results;
 
   if (year) {
