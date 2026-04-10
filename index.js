@@ -194,12 +194,20 @@ async function searchSubtitles(imdbId, title, year, season, episode) {
       );
     });
     if (byTitleYear.length > 0) return byTitleYear;
-    // Looser year-only fallback
-    const byYear = results.filter(r => r.subTitle && r.subTitle.includes(String(year)));
-    if (byYear.length > 0) return byYear;
   }
 
-  return results;
+  // Title-only filter as last resort (no year available)
+  if (!year && results.length > 0) {
+    const normalizedTitle = title.toLowerCase().trim();
+    const byTitle = results.filter(r => {
+      if (!r.subTitle) return false;
+      const st = r.subTitle.toLowerCase().replace(/\s*\(.*?\)\s*/g, '').trim();
+      return st === normalizedTitle || st.startsWith(normalizedTitle + ' ');
+    });
+    if (byTitle.length > 0) return byTitle;
+  }
+
+  return [];
 }
 
 function buildQueries(title, season, episode) {
