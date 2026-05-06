@@ -493,7 +493,7 @@ async function getTitleFromImdb(imdbId) {
       const data = JSON.parse(buffer.toString());
       console.log(`[omdb] response: ${JSON.stringify(data).slice(0, 120)}`);
       if (data.Title) {
-        const result = { title: data.Title, year: data.Year ? parseInt(data.Year) : null, director: data.Director || null };
+        const result = { title: data.Title, year: data.Year ? parseInt(data.Year) : null, director: (data.Director && data.Director !== 'N/A') ? data.Director : null };
         titleCache.set(imdbId, result);
         return result;
       }
