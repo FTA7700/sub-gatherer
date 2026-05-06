@@ -126,7 +126,7 @@ async function searchSubtitles(imdbId, title, year, season, episode) {
 
   for (const query of queries) {
     const postBody = 'act=search&movie=' + encodeURIComponent(query) +
-      '&select-language=2&upldr=&yr=' + (season ? '' : (year || '')) + '&release=';
+      '&select-language=2&upldr=&yr=' + (year || '') + '&release=';
     console.log(`[search] POST query: "${query}" year: ${year || 'any'}`);
 
     let html;
@@ -493,7 +493,7 @@ async function getTitleFromImdb(imdbId) {
       const data = JSON.parse(buffer.toString());
       console.log(`[omdb] response: ${JSON.stringify(data).slice(0, 120)}`);
       if (data.Title) {
-        const result = { title: data.Title, year: data.Year ? parseInt(data.Year) : null, director: (data.Director && data.Director !== 'N/A') ? data.Director : null };
+        const result = { title: data.Title, year: data.Year ? parseInt(data.Year) : null, director: data.Director || null };
         titleCache.set(imdbId, result);
         return result;
       }
@@ -641,7 +641,7 @@ async function searchUnacs(title, year, season, episode, imdbId = null, director
       query = searchTitle + ' ' + season + 'x' + e;
     }
 
-    const yearParam = (year && !season) ? String(year) : '0';
+    const yearParam = year ? String(year) : '0';
     const dirStr = director ? encodeURIComponent(director.split(',')[0].trim()) : '';
     const body = 'm=' + encodeURIComponent(query) + '&l=0&c=&y=' + yearParam + '&action=+++%D2%FA%F0%F1%E8+++&a=&d=' + dirStr + '&u=&g=&t=Submit';
     console.log('[unacs] searching: "' + query + '"' + (director ? ' director: ' + director.split(',')[0].trim() : ''));
@@ -1294,6 +1294,7 @@ const server = http.createServer(async (req, res) => {
   // OpenSubtitles subtitles
   const opensubsMatch = path.match(/^\/opensubs\/subtitles\/(\w+)\/(.+)\.json$/);
   if (opensubsMatch) {
+    await new Promise(r => setTimeout(r, 5000));
     const [, type, id] = opensubsMatch;
     const { imdbId, season, episode } = parseRequest(id);
     console.log(`[opensubs request] ${type} ${imdbId} S${season}E${episode}`);
