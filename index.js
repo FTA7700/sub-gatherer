@@ -126,7 +126,7 @@ async function searchSubtitles(imdbId, title, year, season, episode) {
 
   for (const query of queries) {
     const postBody = 'act=search&movie=' + encodeURIComponent(query) +
-      '&select-language=2&upldr=&yr=' + (year || '') + '&release=';
+      '&select-language=2&upldr=&yr=' + (season ? '' : (year || '')) + '&release=';
     console.log(`[search] POST query: "${query}" year: ${year || 'any'}`);
 
     let html;
@@ -493,7 +493,7 @@ async function getTitleFromImdb(imdbId) {
       const data = JSON.parse(buffer.toString());
       console.log(`[omdb] response: ${JSON.stringify(data).slice(0, 120)}`);
       if (data.Title) {
-        const result = { title: data.Title, year: data.Year ? parseInt(data.Year) : null, director: data.Director || null };
+        const result = { title: data.Title, year: data.Year ? parseInt(data.Year) : null, director: (data.Director && data.Director !== 'N/A') ? data.Director : null };
         titleCache.set(imdbId, result);
         return result;
       }
@@ -590,16 +590,7 @@ function filterUnacsResults(results, title, year, imdbId, season, episode) {
   if (imdbId) {
     const byImdb = results.filter(r => r.rowImdbId === imdbId);
     console.log(`[unacs filter] imdb ${imdbId} matches: ${byImdb.length}`);
-    if (byImdb.length > 0) {
-      // If series, further filter by episode
-      if (season && episode) {
-        const e = String(episode).padStart(2, '0');
-        const epPat = new RegExp(season + 'x' + e, 'i');
-        const byEp = byImdb.filter(r => epPat.test(r.subSlug) || epPat.test(r.subTitle));
-        if (byEp.length > 0) return byEp;
-      }
-      return byImdb;
-    }
+    if (byImdb.length > 0) return byImdb;
   }
 
   // Priority 2: Episode in slug for series
@@ -644,11 +635,13 @@ async function searchUnacs(title, year, season, episode, imdbId = null, director
   if (preColon && preColon !== title && preColon !== partSimplified) titlesToTry.push(preColon);
 
   for (const searchTitle of titlesToTry) {
-    // For series, search title-only — UNACS stores episodes as "Title_SxEE" slugs
-    // Adding episode to query string returns 0 results
-    const query = searchTitle;
+    let query = searchTitle;
+    if (season && episode) {
+      const e = String(episode).padStart(2, '0');
+      query = searchTitle + ' ' + season + 'x' + e;
+    }
 
-    const yearParam = year ? String(year) : '0';
+    const yearParam = (year && !season) ? String(year) : '0';
     const dirStr = director ? encodeURIComponent(director.split(',')[0].trim()) : '';
     const body = 'm=' + encodeURIComponent(query) + '&l=0&c=&y=' + yearParam + '&action=+++%D2%FA%F0%F1%E8+++&a=&d=' + dirStr + '&u=&g=&t=Submit';
     console.log('[unacs] searching: "' + query + '"' + (director ? ' director: ' + director.split(',')[0].trim() : ''));
