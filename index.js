@@ -643,10 +643,7 @@ async function searchUnacs(title, year, season, episode, imdbId = null, director
   if (preColon && preColon !== title && preColon !== partSimplified) titlesToTry.push(preColon);
 
   for (const searchTitle of titlesToTry) {
-    // Search title only — episode appended to query returns 0 results on UNACS
     const query = searchTitle;
-
-    // For series omit year — subs may be uploaded under a different year than show premiere
     const yearParam = (year && !season) ? String(year) : '0';
     const dirStr = director ? encodeURIComponent(director.split(',')[0].trim()) : '';
     const body = 'm=' + encodeURIComponent(query) + '&l=0&c=&y=' + yearParam + '&action=+++%D2%FA%F0%F1%E8+++&a=&d=' + dirStr + '&u=&g=&t=Submit';
@@ -844,20 +841,30 @@ function browserlessPost(urlPath, body, isJson, timeoutMs = 45000) {
 
 async function searchYavka(imdbId, title, season, episode) {
   try {
-    // Use subtitles.php with IMDb ID for both movies and series
-    let searchUrl = YAVKA_BASE + '/subtitles.php?s=&i=' + imdbId + '&l=';
-    if (season && episode) {
-      const e = String(episode).padStart(2, '0');
-      searchUrl += '&e=' + season + 'x' + e;
-    }
-    console.log('[yavka] searching:', searchUrl);
+    const searchUrl = YAVKA_BASE + '/search';
+    console.log('[yavka] searching:', searchUrl, 'imdb:', imdbId);
 
-    // POST search form via BQL (stealth handles Cloudflare)
-    const postBody = 'sea=' + encodeURIComponent(title) + '&i=' + imdbId + '&l=BG&y=&c=&u=&g=&cf-turnstile-response=&search=%EF%80%82+%D0%A2%D1%8A%D1%80%D1%81%D0%B5%D0%BD%D0%B5';
-    const bql = { query: `mutation SearchYavka {\n        goto(url: "https://yavka.net/search", waitUntil: networkIdle) { status }\n        evaluate(content: """\n          (async () => {\n            const r = await fetch('https://yavka.net/search', {\n              method: 'POST',\n              headers: { 'Content-Type': 'application/x-www-form-urlencoded' },\n              body: '${postBody}',\n              credentials: 'include'\n            });\n            return await r.text();\n          })()\n        """) { value }\n      }` };
+    // POST to /search with IMDb ID — new site layout
+    const postBody = 'sea=&i=' + encodeURIComponent(imdbId) + '&l=BG&y=&c=&u=&g=&country_id=';
+    const bql = { query: `mutation SearchYavka {
+        goto(url: "https://yavka.net/search", waitUntil: networkIdle) { status }
+        evaluate(content: """
+          (async () => {
+            const r = await fetch('https://yavka.net/search', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+              body: '${postBody}',
+              credentials: 'include'
+            });
+            return await r.text();
+          })()
+        """) { value }
+      }` };
+
     const { status, text } = await browserlessPost('/stealth/bql', bql, true, 40000);
     console.log('[yavka] BQL search status:', status, 'response len:', text.length);
     if (status !== 200) { console.log('[yavka] BQL search failed:', text.slice(0, 300)); return []; }
+
     let bqlResult;
     try { bqlResult = JSON.parse(text); } catch(e) { console.log('[yavka] BQL parse error:', text.slice(0, 200)); return []; }
     const html = bqlResult && bqlResult.data && bqlResult.data.evaluate && bqlResult.data.evaluate.value || '';
@@ -866,51 +873,48 @@ async function searchYavka(imdbId, title, season, episode) {
 
     const results = [];
     const seen = new Set();
-    // Only parse links inside the subtitles results table, not the sidebar
-    const tableMatch = html.match(/<table[^>]*class="[^"]*subtitles[^"]*"[^>]*>([\s\S]*?)<\/table>/i);
-    const searchArea = tableMatch ? tableMatch[1] : html;
-    const linkRe = /href="\/subs\/(\d+)\/BG[^"]*"/gi;
+
+    // New layout: cards with <a href="/subs/ID/BG"> and <h6 title="Title s01e01">
+    const linkRe = /<a\s[^>]*href="\/subs\/(\d+)\/BG"[^>]*>[\s\S]*?<h6[^>]*title="([^"]*)"[^>]*>/gi;
     let m;
-    while ((m = linkRe.exec(searchArea)) !== null) {
+    while ((m = linkRe.exec(html)) !== null) {
       const subId = m[1];
       if (seen.has(subId)) continue;
       seen.add(subId);
-      const start = Math.max(0, m.index - 500);
-      const snippet = searchArea.slice(start, m.index + 500);
-      const titleMatch = snippet.match(/tooltiptitle="([^"]+)"/i) || snippet.match(/>([^<]{5,60})<\/a>/i);
-      const subTitle = titleMatch ? titleMatch[1].trim() : ('Yavka #' + subId);
-      // Also capture the full row text for episode matching
-      const rowText = snippet;
-      results.push({ subId, subTitle, rowText, downloadPath: '/subs/' + subId + '/BG/' });
+      const subTitle = m[2].trim();
+      results.push({ subId, subTitle, rowText: subTitle, downloadPath: '/subs/' + subId + '/BG' });
     }
+
+    // Fallback: simpler link regex if no h6 found
+    if (results.length === 0) {
+      const simpleLinkRe = /href="\/subs\/(\d+)\/BG"/gi;
+      while ((m = simpleLinkRe.exec(html)) !== null) {
+        const subId = m[1];
+        if (seen.has(subId)) continue;
+        seen.add(subId);
+        results.push({ subId, subTitle: 'Yavka #' + subId, rowText: '', downloadPath: '/subs/' + subId + '/BG' });
+      }
+    }
+
     console.log('[yavka] parsed', results.length, 'results');
     if (results.length > 0) {
       console.log('[yavka] titles:', results.map(r => r.subTitle).join(' | '));
-      console.log('[yavka] row classes:', results.map(r => (r.rowText.match(/class="([^"]*season[^"]*)"/i) || [])[1] || '?').join(' | '));
-      console.log('[yavka] row0:', results[0].rowText.replace(/\s+/g, ' ').slice(0, 800));
-      if (results[1]) console.log('[yavka] row1:', results[1].rowText.replace(/\s+/g, ' ').slice(0, 800));
     }
 
-    // For series: filter by season class, then by episode in rowText
-    if (season && episode && results.length > 1) {
+    // For series: filter by episode pattern in title
+    if (season && episode && results.length > 0) {
       const s = String(season).padStart(2, '0');
       const e = String(episode).padStart(2, '0');
-      const epPat = new RegExp('S' + s + 'E' + e + '|' + season + 'x' + e, 'i');
-      const seasonPat = new RegExp('season' + season + '\\b', 'i');
+      const epPat = new RegExp('s' + s + 'e' + e + '\\b|S' + s + 'E' + e + '|' + season + 'x' + e, 'i');
 
-      // First try episode-level match
       const epFiltered = results.filter(r => epPat.test(r.subTitle) || epPat.test(r.rowText));
       if (epFiltered.length > 0) {
         console.log('[yavka] episode filtered to', epFiltered.length, 'results');
         return epFiltered;
       }
-
-      // Fall back to season-level match (season packs)
-      const seasonFiltered = results.filter(r => seasonPat.test(r.rowText));
-      if (seasonFiltered.length > 0) {
-        console.log('[yavka] season filtered to', seasonFiltered.length, 'results');
-        return seasonFiltered;
-      }
+      // No episode match — return empty for series (don't serve wrong episode)
+      console.log('[yavka] no episode match, returning 0');
+      return [];
     }
 
     return results;
@@ -923,27 +927,18 @@ async function searchYavka(imdbId, title, season, episode) {
 async function downloadYavkaRaw(downloadPath) {
   try {
     const pageUrl = YAVKA_BASE + downloadPath.replace(/\/$/, '');
-    const postUrl = YAVKA_BASE + downloadPath;
     console.log('[yavka] downloading via BrowserQL:', pageUrl);
 
-    // BrowserQL: navigate with stealth, solve Cloudflare Turnstile, fetch the file
+    // Navigate to the sub page, extract the download link href, then fetch it
     const bql = {
       query: `mutation DownloadSub {
         goto(url: "${pageUrl}", waitUntil: networkIdle) { status }
         evaluate(content: """
           (async () => {
-            const form = document.querySelector('form');
-            const params = new URLSearchParams();
-            if (form) {
-              for (const [k, v] of new FormData(form).entries()) params.append(k, v);
-            }
-            params.set('lng', 'BG');
-            const r = await fetch('${postUrl}', {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-              body: params.toString(),
-              credentials: 'include'
-            });
+            const downLink = document.getElementById('down');
+            if (!downLink) return JSON.stringify({ error: 'no down link' });
+            const href = downLink.href;
+            const r = await fetch(href, { credentials: 'include' });
             const ab = await r.arrayBuffer();
             const bytes = Array.from(new Uint8Array(ab));
             const ct = r.headers.get('content-type') || '';
@@ -966,6 +961,7 @@ async function downloadYavkaRaw(downloadPath) {
     let payload;
     try { payload = JSON.parse(evalValue); } catch(e) { console.log('[yavka] payload parse error:', String(evalValue).slice(0, 200)); return null; }
 
+    if (payload.error) { console.log('[yavka] download error:', payload.error); return null; }
     if (!payload.bytes || !payload.bytes.length) { console.log('[yavka] empty bytes'); return null; }
 
     const buffer = Buffer.from(payload.bytes);
