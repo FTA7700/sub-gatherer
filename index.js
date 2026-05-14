@@ -586,6 +586,26 @@ function fetchPost(urlStr, body, extraHeaders = {}) {
 }
 
 function filterUnacsResults(results, title, year, imdbId, season, episode) {
+  const norm = s => s.toLowerCase().replace(/[^a-z0-9]/g, '');
+  const normTitle = norm(title);
+  const titleMatches = r => {
+    const rNorm = norm(r.subTitle);
+    if (normTitle.length <= 6) {
+      return new RegExp('(^|[^a-z0-9])' + normTitle + '([^a-z0-9]|$)').test(rNorm);
+    }
+    return rNorm.includes(normTitle);
+  };
+
+  // Helper: collect episode-specific + season-pack entries, deduplicated
+  function collectEpAndPacks(pool, s, e) {
+    const epPat = new RegExp(s + 'x' + e, 'i');
+    const packPat = /complete|season|pack|пакет|сезон/i;
+    const snumPat = new RegExp('\\b0?' + s + '\\b');
+    const byEp = pool.filter(r => epPat.test(r.subSlug) || epPat.test(r.subTitle));
+    const byPack = pool.filter(r => packPat.test(r.subTitle) && snumPat.test(r.subTitle));
+    return [...new Map([...byEp, ...byPack].map(r => [r.subId, r])).values()];
+  }
+
   // Priority 1: IMDb ID match
   if (imdbId) {
     const byImdb = results.filter(r => r.rowImdbId === imdbId);
@@ -593,41 +613,37 @@ function filterUnacsResults(results, title, year, imdbId, season, episode) {
     if (byImdb.length > 0) {
       if (season && episode) {
         const e = String(episode).padStart(2, '0');
-        const epPat = new RegExp(season + 'x' + e, 'i');
-        const byEp = byImdb.filter(r => epPat.test(r.subSlug) || epPat.test(r.subTitle));
-        if (byEp.length > 0) return byEp;
+        const combined = collectEpAndPacks(byImdb, season, e);
+        if (combined.length > 0) return combined;
       }
       return byImdb;
     }
   }
 
-  // Priority 2: Episode in slug for series
+  // Priority 2: For series — episode slug OR season pack, gated by title check.
+  // No loose title-only fallback for series: prevents franchise/ambiguous-title bleed.
   if (season && episode) {
     const e = String(episode).padStart(2, '0');
-    const epPat = new RegExp(season + 'x' + e, 'i');
-    const byEp = results.filter(r => epPat.test(r.subSlug));
-    if (byEp.length > 0) return byEp;
+    const combined = collectEpAndPacks(results, season, e);
+    const byTitle = combined.filter(titleMatches);
+    console.log(`[unacs filter] series ep/pack: ${combined.length}, after title check: ${byTitle.length}`);
+    return byTitle; // empty [] if nothing confirmed — intentional
   }
 
-  // Priority 3: Title + year match
-  const norm = s => s.toLowerCase().replace(/[^a-z0-9]/g, '');
+  // Priority 3: Movies only — title + year match
   const normWords = s => s.toLowerCase().replace(/[^a-z0-9 ]/g, '').trim();
-  const normTitle = norm(title);
   const normTitleWords = normWords(title);
-  // For short titles use word-boundary match to avoid "her" matching "How I Met Your Mother"
-  const titleMatches = r => {
+  const titleMatchesMovie = r => {
     const rNorm = norm(r.subTitle);
     const rWords = normWords(r.subTitle);
     if (normTitle.length <= 6) {
-      // Exact match or title appears as a whole word segment
       return rNorm === normTitle || new RegExp('(^|\\s)' + normTitleWords + '(\\s|$)').test(rWords);
     }
     return rNorm.includes(normTitle);
   };
-  const byTitle = results.filter(titleMatches);
+  const byTitle = results.filter(titleMatchesMovie);
   console.log(`[unacs filter] title "${title}" (norm: "${normTitle}", len: ${normTitle.length}) matches: ${byTitle.length} / ${results.length}`);
   if (byTitle.length === 0) return [];
-
   if (year) {
     const byYear = byTitle.filter(r => r.rowYear === year);
     if (byYear.length > 0) return byYear;
