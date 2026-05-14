@@ -615,6 +615,7 @@ function filterUnacsResults(results, title, year, imdbId, season, episode) {
         const e = String(episode).padStart(2, '0');
         const combined = collectEpAndPacks(byImdb, season, e);
         if (combined.length > 0) return combined;
+		return []; // right show, wrong season — nothing to serve
       }
       return byImdb;
     }
