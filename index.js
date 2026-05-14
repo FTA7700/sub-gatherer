@@ -607,19 +607,24 @@ function filterUnacsResults(results, title, year, imdbId, season, episode) {
   }
 
   // Priority 1: IMDb ID match
-  if (imdbId) {
-    const byImdb = results.filter(r => r.rowImdbId === imdbId);
-    console.log(`[unacs filter] imdb ${imdbId} matches: ${byImdb.length}`);
-    if (byImdb.length > 0) {
-      if (season && episode) {
-        const e = String(episode).padStart(2, '0');
-        const combined = collectEpAndPacks(byImdb, season, e);
-        if (combined.length > 0) return combined;
-		return []; // right show, wrong season — nothing to serve
-      }
-      return byImdb;
+if (imdbId) {
+  const byImdb = results.filter(r => r.rowImdbId === imdbId);
+  console.log(`[unacs filter] imdb ${imdbId} matches: ${byImdb.length}`);
+  if (byImdb.length > 0) {
+    if (season && episode) {
+      const e = String(episode).padStart(2, '0');
+      const epPat = new RegExp(season + 'x' + e, 'i');
+      const packPat = /complete|season|pack|пакет|сезон/i;
+      const snumPat = new RegExp('\\b0?' + season + '\\b');
+      const byEp = byImdb.filter(r => epPat.test(r.subSlug) || epPat.test(r.subTitle));
+      const byPack = results.filter(r => packPat.test(r.subTitle) && snumPat.test(r.subTitle) && titleMatches(r));
+      const combined = [...new Map([...byEp, ...byPack].map(r => [r.subId, r])).values()];
+      if (combined.length > 0) return combined;
+      return [];
     }
+    return byImdb;
   }
+}
 
   // Priority 2: For series — episode slug OR season pack, gated by title check.
   // No loose title-only fallback for series: prevents franchise/ambiguous-title bleed.
