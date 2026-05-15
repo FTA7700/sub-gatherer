@@ -39,7 +39,7 @@ const MANIFEST_YAVKA = {
 
 const MANIFEST_UNACS = {
   id: 'community.unacsubs',
-  version: '1.5.0',
+  version: '1.6.0',
   name: 'UNACS Subtitles',
   description: 'Bulgarian subtitles from subsunacs.net',
   types: ['movie', 'series'],
