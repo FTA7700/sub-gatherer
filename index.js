@@ -668,9 +668,11 @@ function filterUnacsResults(results, title, year, imdbId, season, episode) {
 async function searchUnacs(title, year, season, episode, imdbId = null, director = null) {
   const partSimplified = title.replace(/\s*:\s*(part|chapter|volume|vol\.?)\s+\w+/i, '').trim();
   const preColon = title.includes(':') ? title.replace(/\s*:.*$/, '').trim() : null;
+  const colonStripped = title.includes(':') ? title.replace(/\s*:\s*/, ' ').trim() : null;
   const titlesToTry = [title];
   if (partSimplified !== title) titlesToTry.push(partSimplified);
-  if (preColon && preColon !== title && preColon !== partSimplified) titlesToTry.push(preColon);
+  if (colonStripped && colonStripped !== title) titlesToTry.push(colonStripped);
+  if (preColon && preColon !== title && preColon !== partSimplified && preColon !== colonStripped) titlesToTry.push(preColon);
 
   for (const searchTitle of titlesToTry) {
     const yearParam = (year && !season) ? String(year) : '0';
