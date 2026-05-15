@@ -215,7 +215,6 @@ async function searchSubtitles(imdbId, title, year, season, episode) {
 }
 
 function buildQueries(title, season, episode) {
-  // Build simplified titles to try
   const partSimplified = title.replace(/\s*:\s*(part|chapter|volume|vol\.?)\s+\w+/i, '').trim();
   const preColon = title.includes(':') ? title.replace(/\s*:.*$/, '').trim() : null;
 
@@ -283,7 +282,6 @@ function extractAllSrtsFromZip(zipBuf, season, episode) {
 
   const s = String(season).padStart(2, '0');
   const e = String(episode).padStart(2, '0');
-  // Strict patterns: episode must appear as E04 or 4x04 not followed by digit
   const patterns = [
     new RegExp('S' + s + 'E' + e + '(?:[^0-9]|$)', 'i'),
     new RegExp(season + 'x' + e + '(?:[^0-9]|$)', 'i'),
@@ -351,7 +349,7 @@ function parseZip(buf) {
 // ─── RAR extraction via node-unrar-js ────────────────────────────────────────
 
 async function extractSrtFromRar(rarBuf, season, episode, depth = 0) {
-  if (depth > 3) return null; // prevent infinite recursion
+  if (depth > 3) return null;
   try {
     const { createExtractorFromData } = require('node-unrar-js');
     const extractor = await createExtractorFromData({ data: rarBuf });
@@ -364,7 +362,6 @@ async function extractSrtFromRar(rarBuf, season, episode, depth = 0) {
 
     console.log(`[rar:${depth}] srts: ${srtHeaders.length}, nested rars: ${rarHeaders.length}, nested zips: ${zipHeaders.length}`);
 
-    // Direct SRTs found — pick best match
     if (srtHeaders.length > 0) {
       let candidates = srtHeaders;
       if (season && episode && srtHeaders.length > 1) {
@@ -394,7 +391,6 @@ async function extractSrtFromRar(rarBuf, season, episode, depth = 0) {
       }
     }
 
-    // No direct SRTs — recurse into nested RARs, best episode match first
     let sortedRarHeaders = rarHeaders;
     if (season && episode) {
       const s = String(season).padStart(2, '0');
@@ -417,7 +413,6 @@ async function extractSrtFromRar(rarBuf, season, episode, depth = 0) {
       }
     }
 
-    // Recurse into nested ZIPs
     for (const zipHeader of zipHeaders) {
       console.log(`[rar:${depth}] diving into nested zip: ${zipHeader.name}`);
       const extracted = extractor.extract({ files: [zipHeader.name] });
@@ -484,7 +479,6 @@ const titleCache = new Map();
 async function getTitleFromImdb(imdbId) {
   if (titleCache.has(imdbId)) return titleCache.get(imdbId);
 
-  // Try multiple OMDB keys
   const omdbKeys = ['trilogy', 'thewdb', 'b9bd48a6'];
   for (const key of omdbKeys) {
     try {
@@ -502,7 +496,6 @@ async function getTitleFromImdb(imdbId) {
     }
   }
 
-  // Fallback: scrape IMDb
   try {
     console.log(`[imdb] scraping title for ${imdbId}`);
     const html = await fetchText(`https://www.imdb.com/title/${imdbId}/`);
@@ -517,7 +510,6 @@ async function getTitleFromImdb(imdbId) {
     console.log(`[imdb] error: ${e.message}`);
   }
 
-  // Last resort: search sabs directly by imdb id
   try {
     console.log(`[sabs] searching by imdb id ${imdbId}`);
     const html = await fetchText(`${BASE_URL}/index.php?act=search&movie=${imdbId}`);
@@ -585,9 +577,12 @@ function fetchPost(urlStr, body, extraHeaders = {}) {
   });
 }
 
+// ─── UNACS result filtering ───────────────────────────────────────────────────
+
 function filterUnacsResults(results, title, year, imdbId, season, episode) {
   const norm = s => s.toLowerCase().replace(/[^a-z0-9]/g, '');
   const normTitle = norm(title);
+
   const titleMatches = r => {
     const rNorm = norm(r.subTitle);
     if (normTitle.length <= 6) {
@@ -596,41 +591,57 @@ function filterUnacsResults(results, title, year, imdbId, season, episode) {
     return rNorm.includes(normTitle);
   };
 
-  // Helper: collect episode-specific + season-pack entries, deduplicated
-  function collectEpAndPacks(pool, s, e) {
-    const epPat = new RegExp(s + 'x' + e, 'i');
-    const packPat = /complete|season|pack|пакет|сезон/i;
-    const snumPat = new RegExp('\\b0?' + s + '\\b');
-    const byEp = pool.filter(r => epPat.test(r.subSlug) || epPat.test(r.subTitle));
-    const byPack = pool.filter(r => packPat.test(r.subTitle) && snumPat.test(r.subTitle));
-    return [...new Map([...byEp, ...byPack].map(r => [r.subId, r])).values()];
-  }
+  const packPat = /complete|season|pack|пакет|сезон/i;
+  // Use non-digit boundaries because subTitles are raw slugs with underscores not spaces
+  const makeSnumPat = s => new RegExp('(^|[^0-9])0?' + s + '([^0-9]|$)');
 
-  // Priority 1: IMDb ID match
+  // ── Priority 1: IMDb ID match ─────────────────────────────────────────────
   if (imdbId) {
     const byImdb = results.filter(r => r.rowImdbId === imdbId);
     console.log(`[unacs filter] imdb ${imdbId} matches: ${byImdb.length}`);
+
     if (byImdb.length > 0) {
       if (season && episode) {
         const e = String(episode).padStart(2, '0');
-        const combined = collectEpAndPacks(byImdb, season, e);
+        const epPat = new RegExp(season + 'x' + e, 'i');
+        const snumPat = makeSnumPat(season);
+
+        // Episodes from the IMDb-confirmed pool
+        const byEp = byImdb.filter(r => epPat.test(r.subSlug) || epPat.test(r.subTitle));
+
+        // Season packs from the FULL results pool — packs often have no IMDb poster → rowImdbId null
+        const byPack = results.filter(r =>
+          packPat.test(r.subTitle) &&
+          snumPat.test(r.subTitle) &&
+          titleMatches(r)
+        );
+
+        console.log(`[unacs filter] byEp: ${byEp.length} byPack: ${byPack.length}`);
+        const combined = [...new Map([...byEp, ...byPack].map(r => [r.subId, r])).values()];
         if (combined.length > 0) return combined;
+        return []; // correct show, wrong season — nothing to serve
       }
       return byImdb;
     }
   }
 
-  // Priority 2: For series — episode slug OR season pack, gated by title check.
-  // No loose title-only fallback for series: prevents franchise/ambiguous-title bleed.
+  // ── Priority 2: Series without IMDb ID match ──────────────────────────────
+  // Episode slug OR season pack, both gated by title check.
+  // No loose title-only fallback — prevents franchise/ambiguous-title bleed.
   if (season && episode) {
     const e = String(episode).padStart(2, '0');
-    const combined = collectEpAndPacks(results, season, e);
+    const epPat = new RegExp(season + 'x' + e, 'i');
+    const snumPat = makeSnumPat(season);
+
+    const byEp = results.filter(r => epPat.test(r.subSlug) || epPat.test(r.subTitle));
+    const byPack = results.filter(r => packPat.test(r.subTitle) && snumPat.test(r.subTitle));
+    const combined = [...new Map([...byEp, ...byPack].map(r => [r.subId, r])).values()];
     const byTitle = combined.filter(titleMatches);
     console.log(`[unacs filter] series ep/pack: ${combined.length}, after title check: ${byTitle.length}`);
-    return byTitle; // empty [] if nothing confirmed — intentional
+    return byTitle;
   }
 
-  // Priority 3: Movies only — title + year match
+  // ── Priority 3: Movies — title + year match ───────────────────────────────
   const normWords = s => s.toLowerCase().replace(/[^a-z0-9 ]/g, '').trim();
   const normTitleWords = normWords(title);
   const titleMatchesMovie = r => {
@@ -641,8 +652,9 @@ function filterUnacsResults(results, title, year, imdbId, season, episode) {
     }
     return rNorm.includes(normTitle);
   };
+
   const byTitle = results.filter(titleMatchesMovie);
-  console.log(`[unacs filter] title "${title}" (norm: "${normTitle}", len: ${normTitle.length}) matches: ${byTitle.length} / ${results.length}`);
+  console.log(`[unacs filter] title "${title}" matches: ${byTitle.length} / ${results.length}`);
   if (byTitle.length === 0) return [];
   if (year) {
     const byYear = byTitle.filter(r => r.rowYear === year);
@@ -650,6 +662,8 @@ function filterUnacsResults(results, title, year, imdbId, season, episode) {
   }
   return byTitle;
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
 
 async function searchUnacs(title, year, season, episode, imdbId = null, director = null) {
   const partSimplified = title.replace(/\s*:\s*(part|chapter|volume|vol\.?)\s+\w+/i, '').trim();
@@ -659,11 +673,10 @@ async function searchUnacs(title, year, season, episode, imdbId = null, director
   if (preColon && preColon !== title && preColon !== partSimplified) titlesToTry.push(preColon);
 
   for (const searchTitle of titlesToTry) {
-    const query = searchTitle;
     const yearParam = (year && !season) ? String(year) : '0';
     const dirStr = director ? encodeURIComponent(director.split(',')[0].trim()) : '';
-    const body = 'm=' + encodeURIComponent(query) + '&l=0&c=&y=' + yearParam + '&action=+++%D2%FA%F0%F1%E8+++&a=&d=' + dirStr + '&u=&g=&t=Submit';
-    console.log('[unacs] searching: "' + query + '"' + (director ? ' director: ' + director.split(',')[0].trim() : ''));
+    const body = 'm=' + encodeURIComponent(searchTitle) + '&l=0&c=&y=' + yearParam + '&action=+++%D2%FA%F0%F1%E8+++&a=&d=' + dirStr + '&u=&g=&t=Submit';
+    console.log('[unacs] searching: "' + searchTitle + '"' + (director ? ' director: ' + director.split(',')[0].trim() : ''));
 
     let html;
     try {
@@ -694,15 +707,12 @@ async function searchUnacs(title, year, season, episode, imdbId = null, director
       const titleMatch = row.match(/href="\/subtitles\/[^"]+">([^<]+)<\/a>/i);
       const subTitle = titleMatch ? titleMatch[1].trim() : subSlug;
 
-      // Language detection
       let lang = 'bul';
       if (/english|англ/i.test(row)) lang = 'eng';
 
-      // IMDb ID extraction from image path
       const imdbMatch = row.match(/\/ii\/big\/(\d+)\.jpg/i);
       const rowImdbId = imdbMatch ? 'tt' + imdbMatch[1].replace(/^0+/, '').padStart(7, '0') : null;
 
-      // Year extraction
       const yearMatch = subTitle.match(/(19|20)\d{2}/);
       const rowYear = yearMatch ? parseInt(yearMatch[0]) : null;
 
@@ -712,11 +722,9 @@ async function searchUnacs(title, year, season, episode, imdbId = null, director
     console.log('[unacs] parsed ' + results.length + ' results');
     if (results.length === 0) continue;
 
-    // Filter by IMDb ID, exact title, or loose match
     const filtered = filterUnacsResults(results, title, year, imdbId, season, episode);
     if (filtered.length > 0) return filtered;
 
-    // Try pre-colon title filter too
     if (preColon && preColon !== title) {
       const filteredSimple = filterUnacsResults(results, preColon, year, imdbId, season, episode);
       if (filteredSimple.length > 0) return filteredSimple;
@@ -724,7 +732,6 @@ async function searchUnacs(title, year, season, episode, imdbId = null, director
   }
   return [];
 }
-
 
 async function downloadUnacs(subSlug, season, episode) {
   const url = `${UNACS_BASE}/subtitles/${subSlug}/`;
@@ -739,7 +746,6 @@ async function downloadUnacs(subSlug, season, episode) {
   const ct = (headers['content-type'] || '').toLowerCase();
   const cd = (headers['content-disposition'] || '').toLowerCase();
 
-  // Detect format by magic bytes first, fall back to headers
   const magic4 = buffer.slice(0, 4);
   const isZipMagic = magic4[0] === 0x50 && magic4[1] === 0x4b;
   const isRarMagic = magic4[0] === 0x52 && magic4[1] === 0x61 && magic4[2] === 0x72 && magic4[3] === 0x21;
@@ -767,7 +773,6 @@ async function downloadUnacs(subSlug, season, episode) {
     return [];
   }
 
-  // Maybe bare SRT
   const str = buffer.slice(0, 30).toString('latin1');
   if (/^\s*\d/.test(str) || str.includes('-->')) return [{ name: subSlug + '.srt', data: buffer }];
 
@@ -780,7 +785,6 @@ const srtCache = new Map();
 
 async function buildSrtProxies(attachId, season, episode) {
   const baseKey = `${attachId}-${season}-${episode}`;
-  // Check if already cached
   const cachedKeys = [...srtCache.keys()].filter(k => k === baseKey || k.startsWith(baseKey + '-i'));
   if (cachedKeys.length > 0) return cachedKeys;
 
@@ -860,7 +864,6 @@ async function searchYavka(imdbId, title, season, episode) {
     const searchUrl = YAVKA_BASE + '/search';
     console.log('[yavka] searching:', searchUrl, 'imdb:', imdbId);
 
-    // POST to /search with IMDb ID — new site layout
     const postBody = 'sea=&i=' + encodeURIComponent(imdbId) + '&l=BG&y=&c=&u=&g=&country_id=';
     const bql = { query: `mutation SearchYavka {
         goto(url: "https://yavka.net/search", waitUntil: networkIdle) { status }
@@ -890,7 +893,6 @@ async function searchYavka(imdbId, title, season, episode) {
     const results = [];
     const seen = new Set();
 
-    // New layout: cards with <a href="/subs/ID/BG"> and <h6 title="Title s01e01">
     const linkRe = /<a\s[^>]*href="\/subs\/(\d+)\/BG"[^>]*>[\s\S]*?<h6[^>]*title="([^"]*)"[^>]*>/gi;
     let m;
     while ((m = linkRe.exec(html)) !== null) {
@@ -901,7 +903,6 @@ async function searchYavka(imdbId, title, season, episode) {
       results.push({ subId, subTitle, rowText: subTitle, downloadPath: '/subs/' + subId + '/BG' });
     }
 
-    // Fallback: simpler link regex if no h6 found
     if (results.length === 0) {
       const simpleLinkRe = /href="\/subs\/(\d+)\/BG"/gi;
       while ((m = simpleLinkRe.exec(html)) !== null) {
@@ -917,18 +918,15 @@ async function searchYavka(imdbId, title, season, episode) {
       console.log('[yavka] titles:', results.map(r => r.subTitle).join(' | '));
     }
 
-    // For series: filter by episode pattern in title
     if (season && episode && results.length > 0) {
       const s = String(season).padStart(2, '0');
       const e = String(episode).padStart(2, '0');
       const epPat = new RegExp('s' + s + 'e' + e + '\\b|S' + s + 'E' + e + '|' + season + 'x' + e, 'i');
-
       const epFiltered = results.filter(r => epPat.test(r.subTitle) || epPat.test(r.rowText));
       if (epFiltered.length > 0) {
         console.log('[yavka] episode filtered to', epFiltered.length, 'results');
         return epFiltered;
       }
-      // No episode match — return empty for series (don't serve wrong episode)
       console.log('[yavka] no episode match, returning 0');
       return [];
     }
@@ -945,7 +943,6 @@ async function downloadYavkaRaw(downloadPath) {
     const pageUrl = YAVKA_BASE + downloadPath.replace(/\/$/, '');
     console.log('[yavka] downloading via BrowserQL:', pageUrl);
 
-    // Navigate to the sub page, extract the download link href, then fetch it
     const bql = {
       query: `mutation DownloadSub {
         goto(url: "${pageUrl}", waitUntil: networkIdle) { status }
@@ -997,7 +994,6 @@ async function downloadYavkaFiltered(downloadPath, season, episode) {
   const isZip = magic4[0] === 0x50 && magic4[1] === 0x4b;
   const isRar = magic4[0] === 0x52 && magic4[1] === 0x61 && magic4[2] === 0x72 && magic4[3] === 0x21;
 
-  // If we have episode info, check filenames first
   if (season && episode) {
     const s = String(season).padStart(2, '0');
     const e = String(episode).padStart(2, '0');
@@ -1018,7 +1014,6 @@ async function downloadYavkaFiltered(downloadPath, season, episode) {
     }
   }
 
-  // No episode filter or raw SRT
   if (isRar) return await extractSrtFromRar(buffer, null, null);
   if (isZip) { const entry = extractSrtFromZip(buffer, null, null); return entry ? entry.data : null; }
   const str = buffer.slice(0, 30).toString('latin1');
@@ -1029,10 +1024,8 @@ async function downloadYavkaFiltered(downloadPath, season, episode) {
 // ─── OpenSubtitles.com ────────────────────────────────────────────────────────
 
 async function searchOpenSubs(imdbId, season, episode) {
-  // Strip tt prefix and leading zeros as required by the API
   const numericId = String(parseInt(imdbId.replace('tt', ''), 10));
 
-  // Parameters must be sorted alphabetically for fastest response (avoids redirect)
   const params = new URLSearchParams();
   if (episode) params.set('episode_number', String(episode));
   params.set('imdb_id', numericId);
@@ -1095,7 +1088,6 @@ async function downloadOpenSubs(fileId) {
   const json = JSON.parse(buffer.toString('utf8'));
   if (!json.link) throw new Error(`No download link: ${buffer.toString('utf8').slice(0, 200)}`);
 
-  // Fetch the actual SRT file
   const { buffer: srtBuf } = await fetchBuffer(json.link);
   return srtBuf;
 }
@@ -1118,7 +1110,6 @@ const server = http.createServer(async (req, res) => {
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Headers', '*');
 
-  // Manifests
   if (path === '/sabs/manifest.json') {
     res.setHeader('Content-Type', 'application/json');
     return res.end(JSON.stringify(MANIFEST_SABS));
@@ -1135,7 +1126,6 @@ const server = http.createServer(async (req, res) => {
     res.setHeader('Content-Type', 'application/json');
     return res.end(JSON.stringify(MANIFEST_OPENSUBS));
   }
-  // Legacy route
   if (path === '/manifest.json') {
     res.setHeader('Content-Type', 'application/json');
     return res.end(JSON.stringify(MANIFEST_SABS));
@@ -1147,6 +1137,7 @@ const server = http.createServer(async (req, res) => {
     const key = decodeURIComponent(proxyMatch[1]);
     console.log(`[proxy] hit key: ${key}, cached: ${srtCache.has(key)}`);
     let data = srtCache.get(key);
+
     if (!data && key.startsWith('yavka__')) {
       const parts = key.split('__');
       const subId = parts[1];
@@ -1158,6 +1149,7 @@ const server = http.createServer(async (req, res) => {
         if (d) { data = toUtf8Srt(d); srtCache.set(key, data); }
       } catch(e) { console.error('[proxy] yavka re-download failed:', e.message); }
     }
+
     if (!data && key.startsWith('unacs__')) {
       const parts = key.split('__');
       const subSlug = parts[1];
@@ -1175,6 +1167,7 @@ const server = http.createServer(async (req, res) => {
         console.error('[proxy] unacs re-download failed:', e.message);
       }
     }
+
     if (!data && key.startsWith('opensubs__')) {
       const fileId = parseInt(key.split('__')[1]);
       console.log(`[proxy] cache miss, downloading opensubs fileId: ${fileId}`);
@@ -1185,10 +1178,8 @@ const server = http.createServer(async (req, res) => {
         console.error('[proxy] opensubs download failed:', e.message);
       }
     }
-    if (!data) {
-      res.writeHead(404);
-      return res.end('Not found');
-    }
+
+    if (!data) { res.writeHead(404); return res.end('Not found'); }
     res.setHeader('Content-Type', 'text/plain; charset=utf-8');
     return res.end(data);
   }
@@ -1317,7 +1308,6 @@ const server = http.createServer(async (req, res) => {
     console.log(`[opensubs request] ${type} ${imdbId} S${season}E${episode}`);
 
     const results = await searchOpenSubs(imdbId, season, episode).catch(e => { console.error('[opensubs] search failed:', e.message); return []; });
-    // BG first, then EN
     const sorted = [...results.filter(r => r.lang === 'bul'), ...results.filter(r => r.lang === 'eng')];
     console.log(`[opensubs found] ${sorted.length} (${sorted.filter(r=>r.lang==='bul').length} BG, ${sorted.filter(r=>r.lang==='eng').length} EN)`);
 
