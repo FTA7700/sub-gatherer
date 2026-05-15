@@ -616,7 +616,7 @@ function filterUnacsResults(results, title, year, imdbId, season, episode) {
           titleMatches(r)
         );
 
-        console.log(`[unacs filter] byEp: ${byEp.length} byPack: ${byPack.length}`);
+        console.log(`[unacs filter] byEp: ${byEp.length} byPack: ${byPack.length} imdbEntries:`, byImdb.map(r => r.subSlug));
         const combined = [...new Map([...byEp, ...byPack].map(r => [r.subId, r])).values()];
         if (combined.length > 0) return combined;
         return []; // correct show, wrong season — nothing to serve
