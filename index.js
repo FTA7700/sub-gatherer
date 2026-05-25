@@ -924,7 +924,19 @@ async function searchYavka(imdbId, title, season, episode) {
       console.log('[yavka] titles:', results.map(r => r.subTitle).join(' | '));
     }
 
-    if (season && episode && results.length > 0) {
+    // Verify results actually match the requested title — Yavka IMDb search is unreliable
+    const normT = title.toLowerCase().replace(/[^a-z0-9]/g, '');
+    const verified = results.filter(r => {
+      const rNorm = r.subTitle.toLowerCase().replace(/[^a-z0-9]/g, '');
+      return rNorm.includes(normT) || normT.includes(rNorm.replace(/s\d+e\d+.*$/, '').trim());
+    });
+    if (verified.length === 0 && results.length > 0) {
+      console.log('[yavka] title mismatch, discarding results');
+      return [];
+    }
+    const results2 = verified;
+
+    if (season && episode && results2.length > 0) {
       const s = String(season).padStart(2, '0');
       const e = String(episode).padStart(2, '0');
       const epPat = new RegExp('s' + s + 'e' + e + '\\b|S' + s + 'E' + e + '|' + season + 'x' + e, 'i');
