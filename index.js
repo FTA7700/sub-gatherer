@@ -940,7 +940,7 @@ async function searchYavka(imdbId, title, season, episode) {
       const s = String(season).padStart(2, '0');
       const e = String(episode).padStart(2, '0');
       const epPat = new RegExp('s' + s + 'e' + e + '\\b|S' + s + 'E' + e + '|' + season + 'x' + e, 'i');
-      const epFiltered = results.filter(r => epPat.test(r.subTitle) || epPat.test(r.rowText));
+      const epFiltered = results2.filter(r => epPat.test(r.subTitle) || epPat.test(r.rowText));
       if (epFiltered.length > 0) {
         console.log('[yavka] episode filtered to', epFiltered.length, 'results');
         return epFiltered;
@@ -949,7 +949,7 @@ async function searchYavka(imdbId, title, season, episode) {
       return [];
     }
 
-    return results;
+    return results2;
   } catch(e) {
     console.error('[yavka] search error:', e.message);
     return [];
