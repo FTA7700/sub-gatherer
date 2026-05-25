@@ -28,7 +28,7 @@ const MANIFEST_SABS = {
 
 const MANIFEST_YAVKA = {
   id: 'community.yavkasubs',
-  version: '1.3.0',
+  version: '1.4.0',
   name: 'Yavka Subtitles',
   description: 'Bulgarian subtitles from yavka.net',
   types: ['movie', 'series'],
